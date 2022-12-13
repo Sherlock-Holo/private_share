@@ -1,15 +1,25 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::io::{Error, ErrorKind};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use libp2p::core::upgrade::{read_length_prefixed, write_length_prefixed};
 use libp2p::core::ProtocolName;
-use libp2p::gossipsub::Gossipsub;
+use libp2p::gossipsub::{
+    Gossipsub, GossipsubConfigBuilder, GossipsubMessage, MessageAuthenticity, MessageId,
+    Sha256Topic, ValidationMode,
+};
+use libp2p::identity::Keypair;
 use libp2p::ping;
-use libp2p::request_response::{RequestResponse, RequestResponseCodec};
+use libp2p::request_response::{
+    ProtocolSupport, RequestResponse, RequestResponseCodec, RequestResponseConfig,
+};
 use libp2p::swarm::{keep_alive, NetworkBehaviour};
+use once_cell::sync::Lazy;
 use prost::Message;
 use tap::TapFallible;
 use tracing::{error, info, instrument};
@@ -17,12 +27,57 @@ use tracing::{error, info, instrument};
 // max 100MiB
 const MAX_CHUNK_SIZE: usize = 100 * 1024;
 
+pub static FILE_SHARE_TOPIC: Lazy<Sha256Topic> = Lazy::new(|| {
+    const TOPIC: &str = "private-share";
+
+    Sha256Topic::new(TOPIC)
+});
+
+pub static DISCOVER_SHARE_TOPIC: Lazy<Sha256Topic> = Lazy::new(|| {
+    const TOPIC: &str = "private-share/discover";
+
+    Sha256Topic::new(TOPIC)
+});
+
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
     pub(crate) gossip: Gossipsub,
     pub(crate) request_respond: RequestResponse<FileCodec>,
     pub(crate) keepalive: keep_alive::Behaviour,
     pub(crate) ping: ping::Behaviour,
+}
+
+impl Behaviour {
+    pub fn new(key: Keypair) -> anyhow::Result<Self> {
+        let gossipsub_config = GossipsubConfigBuilder::default()
+            .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
+            .validation_mode(ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
+            .message_id_fn(create_gossip_message_id) // content-address messages. No two messages of the same content will be propagated.
+            .build()
+            .map_err(|err| anyhow::anyhow!("{}", err))?;
+
+        let mut gossipsub = Gossipsub::new(MessageAuthenticity::Signed(key), gossipsub_config)
+            .map_err(|err| anyhow::anyhow!("{}", err))?;
+
+        gossipsub.subscribe(&FILE_SHARE_TOPIC)?;
+
+        Ok(Self {
+            gossip: gossipsub,
+            request_respond: RequestResponse::new(
+                FileCodec,
+                [(FileProtocol, ProtocolSupport::Full)],
+                RequestResponseConfig::default(),
+            ),
+            keepalive: Default::default(),
+            ping: Default::default(),
+        })
+    }
+}
+
+fn create_gossip_message_id(message: &GossipsubMessage) -> MessageId {
+    let mut s = DefaultHasher::new();
+    message.data.hash(&mut s);
+    MessageId::from(s.finish().to_string())
 }
 
 #[derive(Clone)]
