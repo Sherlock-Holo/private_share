@@ -75,6 +75,8 @@ impl<'a> EventHandler<'a> {
                 BehaviourEvent::RequestRespond(event) => {
                     self.handle_request_respond_event(event).await?;
                 }
+
+                BehaviourEvent::Keepalive(_) | BehaviourEvent::Ping(_) => {}
             },
 
             SwarmEvent::ConnectionEstablished {

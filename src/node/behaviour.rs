@@ -7,8 +7,9 @@ use futures_util::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use libp2p::core::upgrade::{read_length_prefixed, write_length_prefixed};
 use libp2p::core::ProtocolName;
 use libp2p::gossipsub::Gossipsub;
+use libp2p::ping;
 use libp2p::request_response::{RequestResponse, RequestResponseCodec};
-use libp2p::swarm::NetworkBehaviour;
+use libp2p::swarm::{keep_alive, NetworkBehaviour};
 use prost::Message;
 use tap::TapFallible;
 use tracing::{error, info, instrument};
@@ -20,6 +21,8 @@ const MAX_CHUNK_SIZE: usize = 100 * 1024;
 pub struct Behaviour {
     pub(crate) gossip: Gossipsub,
     pub(crate) request_respond: RequestResponse<FileCodec>,
+    pub(crate) keepalive: keep_alive::Behaviour,
+    pub(crate) ping: ping::Behaviour,
 }
 
 #[derive(Clone)]
