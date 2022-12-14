@@ -18,4 +18,15 @@ pub enum Command {
         file_path: PathBuf,
         result_sender: Sender<io::Result<()>>,
     },
+
+    ListFiles {
+        include_peer: bool,
+        result_sender: Sender<io::Result<Vec<ListFileDetail>>>,
+    },
+}
+
+#[derive(Debug, Eq, PartialEq, Hash)]
+pub struct ListFileDetail {
+    pub filename: String,
+    pub hash: String,
 }

@@ -1,19 +1,18 @@
 use std::ffi::OsString;
-use std::io;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
 
-use futures_util::{stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures_util::{stream, StreamExt, TryStreamExt};
 use libp2p::gossipsub::Sha256Topic;
 use libp2p::Swarm;
 use prost::Message as _;
 use tap::TapFallible;
 use tokio::fs;
-use tokio_stream::wrappers::ReadDirStream;
 use tracing::{error, info, instrument};
 
 use crate::node::behaviour::Behaviour;
 use crate::node::message::{File, FileMessage};
+use crate::util;
 
 pub struct RefreshStoreHandler<'a> {
     store_dir: &'a Path,
@@ -29,7 +28,7 @@ impl<'a> RefreshStoreHandler<'a> {
     pub async fn handle_tick(self, topic: Sha256Topic) -> anyhow::Result<()> {
         let store_dir = self.store_dir;
 
-        let store_filenames = collect_filenames(store_dir).await?;
+        let store_filenames = util::collect_filenames(store_dir).await?;
 
         info!(?store_filenames, "collect store files done");
 
@@ -77,25 +76,4 @@ impl<'a> RefreshStoreHandler<'a> {
 
         Ok(())
     }
-}
-
-#[instrument(err)]
-async fn collect_filenames(dir: &Path) -> io::Result<Vec<OsString>> {
-    let read_dir = ReadDirStream::new(
-        fs::read_dir(dir)
-            .await
-            .tap_err(|err| error!(%err, ?dir, "read dir failed"))?,
-    );
-
-    read_dir
-        .try_filter_map(|entry| async move {
-            let metadata = entry
-                .metadata()
-                .await
-                .tap_err(|err| error!(%err, ?dir, "get entry metadata failed"))?;
-            Ok(metadata.is_file().then_some(entry))
-        })
-        .map_ok(|entry| entry.file_name())
-        .try_collect()
-        .await
 }

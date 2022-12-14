@@ -111,6 +111,7 @@ impl Node {
                         &self.index_dir,
                         &self.store_dir,
                         swarm,
+                        &self.peer_stores,
                         &mut self.file_get_requests
                     ).handle_command(cmd).await
                 }
