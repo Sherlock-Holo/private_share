@@ -14,11 +14,11 @@ use libp2p::gossipsub::{
     Sha256Topic, ValidationMode,
 };
 use libp2p::identity::Keypair;
-use libp2p::ping;
 use libp2p::request_response::{
     ProtocolSupport, RequestResponse, RequestResponseCodec, RequestResponseConfig,
 };
 use libp2p::swarm::{keep_alive, NetworkBehaviour};
+use libp2p::{identify, ping};
 use once_cell::sync::Lazy;
 use prost::Message;
 use tap::TapFallible;
@@ -26,6 +26,7 @@ use tracing::{error, info, instrument};
 
 // max 100MiB
 const MAX_CHUNK_SIZE: usize = 100 * 1024;
+const IDENTIFY_PROTOCOL: &str = "private-share-identify/0.1.0";
 
 pub static FILE_SHARE_TOPIC: Lazy<Sha256Topic> = Lazy::new(|| {
     const TOPIC: &str = "private-share";
@@ -45,14 +46,20 @@ pub struct Behaviour {
     pub(crate) request_respond: RequestResponse<FileCodec>,
     pub(crate) keepalive: keep_alive::Behaviour,
     pub(crate) ping: ping::Behaviour,
+    pub(crate) identify: identify::Behaviour,
 }
 
 impl Behaviour {
     pub fn new(key: Keypair) -> anyhow::Result<Self> {
+        let public_key = key.public();
+
         let gossipsub_config = GossipsubConfigBuilder::default()
-            .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
-            .validation_mode(ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
-            .message_id_fn(create_gossip_message_id) // content-address messages. No two messages of the same content will be propagated.
+            // This is set to aid debugging by not cluttering the log space
+            .heartbeat_interval(Duration::from_secs(10))
+            // This sets the kind of message validation. The default is Strict (enforce message signing)
+            .validation_mode(ValidationMode::Strict)
+            // content-address messages. No two messages of the same content will be propagated.
+            .message_id_fn(create_gossip_message_id)
             .build()
             .map_err(|err| anyhow::anyhow!("{}", err))?;
 
@@ -70,6 +77,10 @@ impl Behaviour {
             ),
             keepalive: Default::default(),
             ping: Default::default(),
+            identify: identify::Behaviour::new(identify::Config::new(
+                IDENTIFY_PROTOCOL.to_string(),
+                public_key,
+            )),
         })
     }
 }

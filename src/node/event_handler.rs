@@ -2,15 +2,17 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
+use std::time::SystemTime;
 
 use bytes::{Bytes, BytesMut};
 use futures_channel::oneshot::Sender;
+use itertools::Itertools;
 use libp2p::gossipsub::GossipsubEvent;
 use libp2p::request_response::{
     OutboundFailure, RequestId, RequestResponseEvent, RequestResponseMessage,
 };
 use libp2p::swarm::SwarmEvent;
-use libp2p::{PeerId, Swarm};
+use libp2p::{identify, Multiaddr, PeerId, Swarm};
 use prost::Message as _;
 use tap::TapFallible;
 use tokio::fs;
@@ -18,8 +20,10 @@ use tokio::fs::File;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::ext::AsyncFileExt;
-use crate::node::behaviour::{Behaviour, BehaviourEvent, FileRequest, FileResponse};
-use crate::node::message::Message;
+use crate::node::behaviour::{
+    Behaviour, BehaviourEvent, FileRequest, FileResponse, DISCOVER_SHARE_TOPIC, FILE_SHARE_TOPIC,
+};
+use crate::node::message::{DiscoverMessage, FileMessage, Peer};
 use crate::node::PeerNodeStore;
 
 pub struct EventHandler<'a> {
@@ -74,9 +78,17 @@ impl<'a> EventHandler<'a> {
 
                 BehaviourEvent::RequestRespond(event) => {
                     self.handle_request_respond_event(event).await?;
+
+                    info!("handle request respond event done");
                 }
 
                 BehaviourEvent::Keepalive(_) | BehaviourEvent::Ping(_) => {}
+
+                BehaviourEvent::Identify(event) => {
+                    self.handle_identify_event(event).await?;
+
+                    info!("handle identify event done");
+                }
             },
 
             SwarmEvent::ConnectionEstablished {
@@ -120,36 +132,75 @@ impl<'a> EventHandler<'a> {
         Ok(())
     }
 
+    #[instrument(err, skip(self, event))]
     async fn handle_gossip_event(&mut self, event: GossipsubEvent) -> anyhow::Result<()> {
         match event {
             GossipsubEvent::Message { message, .. } => {
-                let msg = Message::decode(message.data.as_slice())
-                    .tap_err(|err| error!(%err, "decode message failed"))?;
-                let peer_id = bs58::decode(&msg.peer_id)
-                    .into_vec()
-                    .tap_err(|err| error!(%err, peer_id = %msg.peer_id, "decode peer id failed"))?;
-                let peer_id = PeerId::from_bytes(&peer_id)
-                    .tap_err(|err| error!(%err, peer_id = %msg.peer_id, "parse peer id failed"))?;
+                if message.topic == FILE_SHARE_TOPIC.hash() {
+                    let msg = FileMessage::decode(message.data.as_slice())
+                        .tap_err(|err| error!(%err, "decode file message failed"))?;
+                    let peer_id = bs58::decode(&msg.peer_id).into_vec().tap_err(
+                        |err| error!(%err, peer_id = %msg.peer_id, "decode peer id failed"),
+                    )?;
+                    let peer_id = PeerId::from_bytes(&peer_id).tap_err(
+                        |err| error!(%err, peer_id = %msg.peer_id, "parse peer id failed"),
+                    )?;
 
-                info!(%peer_id, ?msg, "receive message from peer");
+                    info!(%peer_id, ?msg, "receive file message from peer");
 
-                let peer_node_store = self
-                    .peer_stores
-                    .entry(peer_id)
-                    .or_insert(PeerNodeStore::default());
+                    let peer_node_store = self
+                        .peer_stores
+                        .entry(peer_id)
+                        .or_insert(PeerNodeStore::default());
 
-                peer_node_store.files.clear();
-                peer_node_store.index.clear();
+                    peer_node_store.files.clear();
+                    peer_node_store.index.clear();
 
-                msg.file_list.into_iter().for_each(|file| {
-                    peer_node_store.index.insert(file.hash.clone());
-                    peer_node_store
-                        .files
-                        .entry(file.filename)
-                        .or_insert_with(|| file.hash);
-                });
+                    msg.file_list.into_iter().for_each(|file| {
+                        peer_node_store.index.insert(file.hash.clone());
+                        peer_node_store
+                            .files
+                            .entry(file.filename)
+                            .or_insert_with(|| file.hash);
+                    });
 
-                info!(%peer_id, "update peer store done");
+                    info!(%peer_id, "update peer store done");
+                } else if message.topic == DISCOVER_SHARE_TOPIC.hash() {
+                    let msg = DiscoverMessage::decode(message.data.as_slice())
+                        .tap_err(|err| error!(%err, "decode discover message failed"))?;
+                    let peers = msg
+                        .peers
+                        .into_iter()
+                        .map(|peer| {
+                            let peer_id = bs58::decode(&peer.peer_id).into_vec().tap_err(
+                                |err| error!(%err, peer_id = %peer.peer_id, "decode peer id failed"),
+                            )?;
+                            let peer_id = PeerId::from_bytes(&peer_id).tap_err(
+                                |err| error!(%err, peer_id = %peer.peer_id, "parse peer id failed"),
+                            )?;
+
+                            let addr = Multiaddr::try_from(peer.addr)
+                                .tap_err(|err| error!(%err, "parse peer addr failed"))?;
+
+                            Ok::<_, anyhow::Error>((peer_id, addr))
+                        })
+                        .try_collect::<_, Vec<_>, _>()?;
+
+                    info!(?peers, "collect peers done");
+
+                    let behaviour = self.swarm.behaviour_mut();
+                    for (peer_id, addr) in peers {
+                        if behaviour.request_respond.is_connected(&peer_id) {
+                            continue;
+                        }
+
+                        behaviour
+                            .request_respond
+                            .add_address(&peer_id, addr.clone());
+
+                        info!(%peer_id, ?addr, "add peer into request respond");
+                    }
+                }
             }
             GossipsubEvent::Subscribed { peer_id, topic } => {
                 debug!(%peer_id, %topic, "new peer node join the share topic");
@@ -256,6 +307,55 @@ impl<'a> EventHandler<'a> {
                     let _ = sender.send(Ok(response));
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    #[instrument(err, skip(self, event))]
+    async fn handle_identify_event(&mut self, event: identify::Event) -> anyhow::Result<()> {
+        match event {
+            identify::Event::Received { peer_id, info } => {
+                let peers = info
+                    .listen_addrs
+                    .into_iter()
+                    .map(|addr| Peer {
+                        peer_id: peer_id.to_base58(),
+                        addr: addr.to_vec(),
+                    })
+                    .collect::<Vec<_>>();
+
+                let discover_message = DiscoverMessage {
+                    peers,
+                    discover_time: SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_micros() as _,
+                };
+
+                info!(?discover_message, "create discover message done");
+
+                let discover_message = discover_message.encode_to_vec();
+                let behaviour = self.swarm.behaviour_mut();
+
+                behaviour
+                    .gossip
+                    .publish(DISCOVER_SHARE_TOPIC.clone(), discover_message)
+                    .tap_err(|err| {
+                        error!(
+                            %err, topic = ?&*DISCOVER_SHARE_TOPIC,
+                            "publish discover message failed"
+                        )
+                    })?;
+
+                info!(topic = ?&*DISCOVER_SHARE_TOPIC, "publish discover message done");
+            }
+
+            identify::Event::Sent { peer_id } => {
+                info!(%peer_id, "send identify response to peer done");
+            }
+
+            identify::Event::Pushed { .. } | identify::Event::Error { .. } => {}
         }
 
         Ok(())
