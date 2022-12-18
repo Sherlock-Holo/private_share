@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::io::{Error, ErrorKind};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::time::SystemTime;
 
 use futures_util::{stream, StreamExt, TryStreamExt};
 use libp2p::gossipsub::error::PublishError;
@@ -32,7 +33,7 @@ impl<'a> RefreshStoreHandler<'a> {
 
         let store_filenames = util::collect_filenames(store_dir).await?;
 
-        info!(?store_filenames, "collect store files done");
+        info!(?store_filenames, ?store_dir, "collect store files done");
 
         let files = stream::iter(store_filenames.iter())
             .then(|filename| async move {
@@ -42,12 +43,18 @@ impl<'a> RefreshStoreHandler<'a> {
                     .await
                     .tap_err(|err| error!(%err, ?store_file_path, "read symlink failed"))?;
 
+                info!(
+                    ?store_file_path,
+                    ?index_file_path,
+                    "get index file path done"
+                );
+
                 let metadata = fs::metadata(&index_file_path)
                     .await
                     .tap_err(|err| error!(%err, ?index_file_path, "get metadata failed"))?;
                 let file_size = metadata.size();
 
-                let index_filename = index_file_path.file_name().ok_or_else(|| {
+                let hash = index_file_path.file_name().ok_or_else(|| {
                     error!(?index_file_path, "index file doesn't contain filename");
 
                     Error::new(
@@ -56,12 +63,19 @@ impl<'a> RefreshStoreHandler<'a> {
                     )
                 })?;
 
-                Ok::<_, Error>((filename, index_filename.to_owned(), file_size))
+                info!(
+                    ?store_file_path,
+                    ?index_file_path,
+                    ?hash,
+                    "get file hash done"
+                );
+
+                Ok::<_, Error>((filename, hash.to_owned(), file_size))
             })
             .map_ok(
-                |(filename, index_filename, file_size): (&OsString, OsString, u64)| File {
+                |(filename, hash, file_size): (&OsString, OsString, u64)| File {
                     filename: filename.to_string_lossy().to_string(),
-                    hash: index_filename.to_string_lossy().to_string(),
+                    hash: hash.to_string_lossy().to_string(),
                     file_size,
                 },
             )
@@ -73,6 +87,10 @@ impl<'a> RefreshStoreHandler<'a> {
         let message = FileMessage {
             peer_id: self.swarm.local_peer_id().to_base58(),
             file_list: files,
+            refresh_time: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as _,
         };
         let message = message.encode_to_vec();
 

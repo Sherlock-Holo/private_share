@@ -26,9 +26,8 @@ pub async fn collect_filenames(dir: &Path) -> io::Result<Vec<OsString>> {
                 .metadata()
                 .await
                 .tap_err(|err| error!(%err, ?dir, "get entry metadata failed"))?;
-            Ok(metadata.is_file().then_some(entry))
+            Ok((!metadata.is_dir()).then_some(entry.file_name()))
         })
-        .map_ok(|entry| entry.file_name())
         .try_collect()
         .await
 }

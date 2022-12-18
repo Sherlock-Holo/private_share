@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
@@ -32,7 +32,7 @@ pub struct EventHandler<'a> {
     swarm: &'a mut Swarm<Behaviour>,
     peer_stores: &'a mut HashMap<PeerId, PeerNodeStore>,
     file_get_requests: &'a mut HashMap<RequestId, Sender<io::Result<FileResponse>>>,
-    peer_addr_connecting: &'a mut HashSet<PeerId>,
+    peer_addr_connecting: &'a mut HashMap<PeerId, Multiaddr>,
 }
 
 impl<'a> EventHandler<'a> {
@@ -42,7 +42,7 @@ impl<'a> EventHandler<'a> {
         swarm: &'a mut Swarm<Behaviour>,
         peer_stores: &'a mut HashMap<PeerId, PeerNodeStore>,
         file_get_requests: &'a mut HashMap<RequestId, Sender<io::Result<FileResponse>>>,
-        peer_addr_connecting: &'a mut HashSet<PeerId>,
+        peer_addr_connecting: &'a mut HashMap<PeerId, Multiaddr>,
     ) -> Self {
         Self {
             index_dir,
@@ -99,9 +99,9 @@ impl<'a> EventHandler<'a> {
                     .gossip
                     .add_explicit_peer(&peer_id);
 
-                if endpoint.is_dialer() {
-                    self.peer_addr_connecting.remove(&peer_id);
+                self.peer_addr_connecting.remove(&peer_id);
 
+                if endpoint.is_dialer() {
                     info!(%peer_id, "dial peer done");
                 } else {
                     info!(%peer_id, "accept peer done");
@@ -118,8 +118,26 @@ impl<'a> EventHandler<'a> {
             }
 
             SwarmEvent::IncomingConnection { .. } => {}
-            SwarmEvent::IncomingConnectionError { .. } => {}
-            SwarmEvent::OutgoingConnectionError { .. } => {}
+            SwarmEvent::IncomingConnectionError {
+                local_addr,
+                send_back_addr,
+                error,
+            } => {
+                error!(%local_addr, %send_back_addr, %error, "incoming connection error");
+            }
+            SwarmEvent::OutgoingConnectionError { peer_id, error } => {
+                error!(?peer_id, %error, "outgoing connection error");
+
+                if let Some(peer_id) = peer_id {
+                    if let Some(addr) = self.peer_addr_connecting.get(&peer_id) {
+                        self.swarm
+                            .dial(addr.clone())
+                            .tap_err(|err| error!(%err, %peer_id, %addr, "dial peer failed"))?;
+
+                        info!(%peer_id, %addr, "re-dialing peer");
+                    }
+                }
+            }
             SwarmEvent::BannedPeer { .. } => {
                 unreachable!("we don't ban any peers");
             }
@@ -339,6 +357,8 @@ impl<'a> EventHandler<'a> {
 
                 let discover_message = discover_message.encode_to_vec();
                 let behaviour = self.swarm.behaviour_mut();
+
+                behaviour.gossip.add_explicit_peer(&peer_id);
 
                 behaviour
                     .gossip

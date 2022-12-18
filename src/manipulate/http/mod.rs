@@ -47,7 +47,7 @@ impl Server {
         Ok(())
     }
 
-    #[instrument]
+    #[instrument(skip(self))]
     async fn handle(&mut self, req: Request<Body>) -> Response<Body> {
         let path = req.uri().path();
         let method = req.method();
@@ -66,7 +66,7 @@ impl Server {
         }
     }
 
-    #[instrument]
+    #[instrument(skip(self))]
     async fn handle_list_files(&mut self, req: Request<Body>) -> Response<Body> {
         let include_peer = match req.uri().query() {
             None => true,
@@ -83,7 +83,7 @@ impl Server {
         self.list_files(include_peer).await
     }
 
-    #[instrument]
+    #[instrument(skip(self))]
     async fn list_files(&mut self, include_peer: bool) -> Response<Body> {
         let (sender, receiver) = oneshot::channel();
 
@@ -163,12 +163,15 @@ impl Server {
             Ok(data) => {
                 info!(?list_response, %data, "marshal list response done");
 
-                Response::new(Body::from(data))
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(data))
+                    .expect("create response failed")
             }
         }
     }
 
-    #[instrument]
+    #[instrument(skip(self))]
     async fn handle_add_file(&mut self, req: Request<Body>) -> Response<Body> {
         let body = match read_body(req).await {
             Err(err) => return err,

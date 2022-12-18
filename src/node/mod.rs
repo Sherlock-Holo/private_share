@@ -1,12 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::time::Duration;
 use std::{future, io};
 
 use futures_channel::mpsc::Receiver;
 use futures_channel::oneshot::Sender;
-use futures_util::stream::Peekable;
 use futures_util::StreamExt;
 use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::core::transport::Boxed;
@@ -14,7 +12,7 @@ use libp2p::core::upgrade::{SelectUpgrade, Version};
 use libp2p::dns::TokioDnsConfig;
 use libp2p::identity::Keypair;
 use libp2p::mplex::MplexConfig;
-use libp2p::pnet::{PnetConfig, PnetError, PreSharedKey};
+use libp2p::pnet::PreSharedKey;
 use libp2p::request_response::RequestId;
 use libp2p::yamux::YamuxConfig;
 use libp2p::{noise, tcp, websocket, Multiaddr, PeerId, Swarm, Transport};
@@ -48,8 +46,8 @@ pub struct Node {
     swarm: Swarm<Behaviour>,
     peer_stores: HashMap<PeerId, PeerNodeStore>,
     file_get_requests: HashMap<RequestId, Sender<io::Result<FileResponse>>>,
-    peer_addr_receiver: Peekable<Receiver<Multiaddr>>,
-    peer_addr_connecting: HashSet<PeerId>,
+    peer_addr_receiver: Receiver<Multiaddr>,
+    peer_addr_connecting: HashMap<PeerId, Multiaddr>,
     command_receiver: Receiver<Command>,
     refresh_store_ticker: Interval,
     sync_file_ticker: Interval,
@@ -76,7 +74,7 @@ impl Node {
             swarm,
             peer_stores: Default::default(),
             file_get_requests: Default::default(),
-            peer_addr_receiver: peer_addr_receiver.peekable(),
+            peer_addr_receiver,
             peer_addr_connecting: Default::default(),
             command_receiver,
             refresh_store_ticker: time::interval(config.refresh_store_interval),
@@ -93,7 +91,7 @@ impl Node {
 
         loop {
             let swarm = &mut self.swarm;
-            let mut peer_addr_receiver = Pin::new(&mut self.peer_addr_receiver);
+            let peer_addr_receiver = &mut self.peer_addr_receiver;
             let command_receiver = &mut self.command_receiver;
             let refresh_store_ticker = &mut self.refresh_store_ticker;
             let sync_file_ticker = &mut self.sync_file_ticker;
@@ -112,10 +110,8 @@ impl Node {
                             ).handle_event(event).await?;
                         }
 
-                        Some(addr) = peer_addr_receiver.as_mut().peek() => {
-                            let addr = addr.clone();
-
-                            PeerConnector::new(swarm, peer_addr_receiver, &mut self.peer_addr_connecting)
+                        Some(addr) = peer_addr_receiver.next() => {
+                            PeerConnector::new(swarm, &mut self.peer_addr_connecting)
                                 .connect_peer(addr).await?;
                         }
 
@@ -169,10 +165,8 @@ impl Node {
                             ).handle_event(event).await?;
                         }
 
-                        Some(addr) = peer_addr_receiver.as_mut().peek() => {
-                            let addr = addr.clone();
-
-                            PeerConnector::new(swarm, peer_addr_receiver, &mut self.peer_addr_connecting)
+                        Some(addr) = peer_addr_receiver.next() => {
+                            PeerConnector::new(swarm, &mut self.peer_addr_connecting)
                                 .connect_peer(addr).await?;
                         }
 
@@ -207,16 +201,16 @@ pub fn create_transport(
     let transport = websocket::WsConfig::new(TokioDnsConfig::system(tcp::tokio::Transport::new(
         tcp::Config::new().nodelay(true),
     ))?)
-    .and_then(move |conn, connected_point| async move {
-        let conn = PnetConfig::new(handshake_key)
-            .handshake(conn)
-            .await
-            .tap_err(|err| error!(%err, ?connected_point, "handshake failed"))?;
+        /*.and_then(move |conn, connected_point| async move {
+            let conn = PnetConfig::new(handshake_key)
+                .handshake(conn)
+                .await
+                .tap_err(|err| error!(%err, ?connected_point, "handshake failed"))?;
 
-        info!(?connected_point, "handshake done");
+            info!(?connected_point, "handshake done");
 
-        Ok::<_, PnetError>(conn)
-    });
+            Ok::<_, PnetError>(conn)
+        })*/;
 
     Ok(transport
         .upgrade(Version::V1)

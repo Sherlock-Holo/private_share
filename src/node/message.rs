@@ -5,6 +5,10 @@ pub struct FileMessage {
 
     #[prost(message, repeated, tag = "2")]
     pub file_list: Vec<File>,
+
+    /// use for avoid duplicate gossip message
+    #[prost(uint64, tag = "3")]
+    pub refresh_time: u64,
 }
 
 #[derive(prost::Message)]

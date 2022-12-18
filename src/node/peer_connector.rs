@@ -1,9 +1,5 @@
-use std::collections::HashSet;
-use std::pin::Pin;
+use std::collections::HashMap;
 
-use futures_channel::mpsc::Receiver;
-use futures_util::stream::Peekable;
-use futures_util::StreamExt;
 use libp2p::{Multiaddr, PeerId, Swarm};
 use tap::TapFallible;
 use tracing::{error, info, instrument};
@@ -12,19 +8,16 @@ use crate::node::behaviour::Behaviour;
 
 pub struct PeerConnector<'a> {
     swarm: &'a mut Swarm<Behaviour>,
-    peer_addr_receiver: Pin<&'a mut Peekable<Receiver<Multiaddr>>>,
-    peer_addr_connecting: &'a mut HashSet<PeerId>,
+    peer_addr_connecting: &'a mut HashMap<PeerId, Multiaddr>,
 }
 
 impl<'a> PeerConnector<'a> {
     pub fn new(
         swarm: &'a mut Swarm<Behaviour>,
-        peer_addr_receiver: Pin<&'a mut Peekable<Receiver<Multiaddr>>>,
-        peer_addr_connecting: &'a mut HashSet<PeerId>,
+        peer_addr_connecting: &'a mut HashMap<PeerId, Multiaddr>,
     ) -> Self {
         Self {
             swarm,
-            peer_addr_receiver,
             peer_addr_connecting,
         }
     }
@@ -44,14 +37,6 @@ impl<'a> PeerConnector<'a> {
         {
             info!(%peer_id, "peer is connected");
 
-            let _ = self.peer_addr_receiver.get_mut().next().await;
-
-            return Ok(());
-        }
-
-        if self.peer_addr_connecting.contains(&peer_id) {
-            info!(%peer_id, "peer is connecting");
-
             return Ok(());
         }
 
@@ -59,7 +44,9 @@ impl<'a> PeerConnector<'a> {
             .dial(addr.clone())
             .tap_err(|err| error!(%err, %addr, "dial peer failed"))?;
 
-        self.peer_addr_connecting.insert(peer_id);
+        info!(%peer_id, "peer is dialing");
+
+        self.peer_addr_connecting.insert(peer_id, addr);
 
         Ok(())
     }

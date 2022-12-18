@@ -157,7 +157,12 @@ impl<'a> FileSync<'a> {
 
                     fs::symlink(&index_file_path, &store_file_path)
                         .await
-                        .tap_err(|err| error!(%err, "create symlink failed"))?;
+                        .tap_err(|err| {
+                            error!(
+                                %err, ?index_file_path, ?store_file_path,
+                                "create symlink failed"
+                            );
+                        })?;
 
                     info!(?index_file_path, ?store_file_path, "create symlink done");
                 }

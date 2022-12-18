@@ -221,6 +221,8 @@ impl<'a> CommandHandler<'a> {
         }
 
         info!(?store_file_path, "create symlink done");
+
+        let _ = result_sender.send(Ok(()));
     }
 
     #[instrument(skip(self))]

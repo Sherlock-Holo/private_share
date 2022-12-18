@@ -67,6 +67,7 @@ impl Behaviour {
             .map_err(|err| anyhow::anyhow!("{}", err))?;
 
         gossipsub.subscribe(&FILE_SHARE_TOPIC)?;
+        gossipsub.subscribe(&DISCOVER_SHARE_TOPIC)?;
 
         Ok(Self {
             gossip: gossipsub,
