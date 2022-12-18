@@ -4,6 +4,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use futures_util::{stream, StreamExt, TryStreamExt};
+use libp2p::gossipsub::error::PublishError;
 use libp2p::gossipsub::Sha256Topic;
 use libp2p::Swarm;
 use prost::Message as _;
@@ -75,11 +76,24 @@ impl<'a> RefreshStoreHandler<'a> {
         };
         let message = message.encode_to_vec();
 
-        self.swarm
+        match self
+            .swarm
             .behaviour_mut()
             .gossip
             .publish(topic.clone(), message)
-            .tap_err(|err| error!(%err, ?topic, "publish message to topic failed"))?;
+        {
+            Err(PublishError::InsufficientPeers) => {
+                info!(?topic, "no peer connected");
+            }
+
+            Err(err) => {
+                error!(%err, ?topic, "publish message to topic failed");
+
+                return Err(err.into());
+            }
+
+            Ok(_) => {}
+        }
 
         info!(?topic, "publish message to topic done");
 
