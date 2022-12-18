@@ -1,13 +1,14 @@
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{Error, ErrorKind, SeekFrom};
+use std::mem;
 use std::path::Path;
 
 use bytes::BytesMut;
 use futures_channel::oneshot::Sender;
 use futures_util::{stream, StreamExt, TryStreamExt};
-use libp2p::request_response::RequestId;
-use libp2p::{PeerId, Swarm};
+use libp2p::PeerId;
 use sha2::digest::FixedOutput;
 use sha2::{Digest, Sha256};
 use tap::TapFallible;
@@ -18,8 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tracing::{error, info, instrument};
 
 use crate::command::{Command, ListFileDetail};
-use crate::node::behaviour::Behaviour;
-use crate::node::{FileResponse, PeerNodeStore};
+use crate::node::PeerNodeStore;
 use crate::util::collect_filenames;
 
 const BUF_SIZE: usize = 1024 * 1024; // 1MiB
@@ -27,49 +27,25 @@ const BUF_SIZE: usize = 1024 * 1024; // 1MiB
 pub struct CommandHandler<'a> {
     index_dir: &'a Path,
     store_dir: &'a Path,
-    swarm: &'a mut Swarm<Behaviour>,
     peer_stores: &'a HashMap<PeerId, PeerNodeStore>,
-    file_get_requests: &'a mut HashMap<RequestId, Sender<io::Result<FileResponse>>>,
 }
 
 impl<'a> CommandHandler<'a> {
     pub fn new(
         index_dir: &'a Path,
         store_dir: &'a Path,
-        swarm: &'a mut Swarm<Behaviour>,
         peer_stores: &'a HashMap<PeerId, PeerNodeStore>,
-        file_get_requests: &'a mut HashMap<RequestId, Sender<io::Result<FileResponse>>>,
     ) -> Self {
         Self {
             index_dir,
             store_dir,
-            swarm,
             peer_stores,
-            file_get_requests,
         }
     }
 
     #[instrument(skip(self))]
     pub async fn handle_command(mut self, cmd: Command) {
         match cmd {
-            Command::GetFile {
-                peer_id,
-                request,
-                response_sender,
-            } => {
-                let request_id = self
-                    .swarm
-                    .behaviour_mut()
-                    .request_respond
-                    .send_request(&peer_id, request);
-
-                info!(%peer_id, %request_id, "send file request to peer done");
-
-                self.file_get_requests.insert(request_id, response_sender);
-
-                info!(%peer_id, "handling get file command");
-            }
-
             Command::AddFile {
                 file_path,
                 result_sender,
@@ -287,8 +263,10 @@ impl<'a> CommandHandler<'a> {
                 .map_ok(|(filename, hash): (&OsString, OsString)| ListFileDetail {
                     filename: filename.to_string_lossy().to_string(),
                     hash: hash.to_string_lossy().to_string(),
+                    downloaded: true,
+                    peers: vec![],
                 })
-                .try_collect::<HashSet<_>>()
+                .try_collect()
                 .await
             {
                 Err(err) => {
@@ -310,16 +288,53 @@ impl<'a> CommandHandler<'a> {
             return;
         }
 
+        let exists_files = list_file_details
+            .iter()
+            .map(|detail| (detail.filename.clone(), detail.hash.clone()))
+            .collect::<HashSet<_>>();
+
         let peer_list_file_details = self
             .peer_stores
-            .values()
-            .flat_map(|peer_store| peer_store.files.iter())
-            .map(|(filename, hash)| ListFileDetail {
+            .iter()
+            .flat_map(|(peer_id, peer_store)| {
+                peer_store
+                    .files
+                    .iter()
+                    .map(|(filename, hash)| (*peer_id, filename, hash))
+            })
+            .filter(|(_, filename, hash)| {
+                !exists_files.contains(&((*filename).clone(), (*hash).clone()))
+            })
+            .map(|(peer_id, filename, hash)| ListFileDetail {
                 filename: filename.to_owned(),
                 hash: hash.to_owned(),
+                downloaded: false,
+                peers: vec![peer_id],
             });
 
         list_file_details.extend(peer_list_file_details);
+
+        let mut file_peer_map = HashMap::<_, HashSet<_>>::with_capacity(list_file_details.len());
+        for mut list_file_detail in list_file_details {
+            let peers = mem::take(&mut list_file_detail.peers);
+            match file_peer_map.entry(list_file_detail) {
+                entry @ Entry::Vacant(..) => {
+                    entry.or_insert(peers.into_iter().collect());
+                }
+                entry @ Entry::Occupied(..) => {
+                    entry.and_modify(|exists_peers| exists_peers.extend(peers));
+                }
+            }
+        }
+
+        let list_file_details = file_peer_map
+            .into_iter()
+            .map(|(mut list_file_detail, peers)| {
+                list_file_detail.peers = peers.into_iter().collect();
+
+                list_file_detail
+            })
+            .collect::<Vec<_>>();
 
         info!(?list_file_details, "collect local and peer files done");
 

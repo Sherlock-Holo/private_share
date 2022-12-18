@@ -14,6 +14,9 @@ pub struct File {
 
     #[prost(string, tag = "2")]
     pub hash: String,
+
+    #[prost(uint64, tag = "3")]
+    pub file_size: u64,
 }
 
 #[derive(prost::Message)]
