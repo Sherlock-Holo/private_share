@@ -1,6 +1,7 @@
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 
+use bytes::Bytes;
 use futures_channel::mpsc::Sender;
 use futures_channel::oneshot;
 use futures_util::SinkExt;
@@ -79,6 +80,11 @@ impl Server {
                 }),
         };
 
+        self.list_files(include_peer).await
+    }
+
+    #[instrument]
+    async fn list_files(&mut self, include_peer: bool) -> Response<Body> {
         let (sender, receiver) = oneshot::channel();
 
         if let Err(err) = self
@@ -134,6 +140,12 @@ impl Server {
             .map(|detail| ListFile {
                 filename: detail.filename,
                 hash: detail.hash,
+                downloaded: detail.downloaded,
+                peers: detail
+                    .peers
+                    .into_iter()
+                    .map(|peer| peer.to_base58())
+                    .collect(),
             })
             .collect();
         let list_response = ListResponse { files };
@@ -158,19 +170,8 @@ impl Server {
 
     #[instrument]
     async fn handle_add_file(&mut self, req: Request<Body>) -> Response<Body> {
-        const MAX_BODY_SIZE: usize = 16 * 1024; // 16KiB
-
-        let body = Limited::new(req.into_body(), MAX_BODY_SIZE);
-        let body = match to_bytes(body).await {
-            Err(err) => {
-                error!(%err, "read body failed");
-
-                return Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(Body::from(err.to_string()))
-                    .expect("create response failed");
-            }
-
+        let body = match read_body(req).await {
+            Err(err) => return err,
             Ok(body) => body,
         };
 
@@ -245,5 +246,24 @@ impl Server {
                 Response::new(Body::empty())
             }
         }
+    }
+}
+
+#[instrument(skip(req))]
+async fn read_body(req: Request<Body>) -> Result<Bytes, Response<Body>> {
+    const MAX_BODY_SIZE: usize = 16 * 1024; // 16KiB
+
+    let body = Limited::new(req.into_body(), MAX_BODY_SIZE);
+    match to_bytes(body).await {
+        Err(err) => {
+            error!(%err, "read body failed");
+
+            Err(Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::from(err.to_string()))
+                .expect("create response failed"))
+        }
+
+        Ok(body) => Ok(body),
     }
 }

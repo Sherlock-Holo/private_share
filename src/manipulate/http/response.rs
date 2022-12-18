@@ -9,13 +9,11 @@ pub struct ListResponse {
 pub struct ListFile {
     pub filename: String,
     pub hash: String,
+    pub downloaded: bool,
+    pub peers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AddFileRequest {
     pub file_path: String,
-}
-
-pub struct AddFileResponse {
-    pub hash: String,
 }
