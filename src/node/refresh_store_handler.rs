@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::io::{Error, ErrorKind};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use futures_util::{stream, StreamExt, TryStreamExt};
@@ -40,6 +41,11 @@ impl<'a> RefreshStoreHandler<'a> {
                     .await
                     .tap_err(|err| error!(%err, ?store_file_path, "read symlink failed"))?;
 
+                let metadata = fs::metadata(&index_file_path)
+                    .await
+                    .tap_err(|err| error!(%err, ?index_file_path, "get metadata failed"))?;
+                let file_size = metadata.size();
+
                 let index_filename = index_file_path.file_name().ok_or_else(|| {
                     error!(?index_file_path, "index file doesn't contain filename");
 
@@ -49,12 +55,15 @@ impl<'a> RefreshStoreHandler<'a> {
                     )
                 })?;
 
-                Ok::<_, Error>((filename, index_filename.to_owned()))
+                Ok::<_, Error>((filename, index_filename.to_owned(), file_size))
             })
-            .map_ok(|(filename, index_filename): (&OsString, OsString)| File {
-                filename: filename.to_string_lossy().to_string(),
-                hash: index_filename.to_string_lossy().to_string(),
-            })
+            .map_ok(
+                |(filename, index_filename, file_size): (&OsString, OsString, u64)| File {
+                    filename: filename.to_string_lossy().to_string(),
+                    hash: index_filename.to_string_lossy().to_string(),
+                    file_size,
+                },
+            )
             .try_collect::<Vec<_>>()
             .await?;
 

@@ -157,7 +157,9 @@ impl<'a> EventHandler<'a> {
                     peer_node_store.index.clear();
 
                     msg.file_list.into_iter().for_each(|file| {
-                        peer_node_store.index.insert(file.hash.clone());
+                        peer_node_store
+                            .index
+                            .insert(file.hash.clone(), file.file_size);
                         peer_node_store
                             .files
                             .entry(file.filename)
