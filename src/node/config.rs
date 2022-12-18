@@ -11,4 +11,5 @@ pub struct Config {
     pub store_dir: PathBuf,
     pub handshake_key: PreSharedKey,
     pub refresh_store_interval: Duration,
+    pub sync_file_interval: Duration,
 }
