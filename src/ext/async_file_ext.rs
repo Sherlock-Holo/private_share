@@ -13,6 +13,16 @@ pub trait AsyncFileExt {
     async fn read_at(&self, buf: &mut [u8], offset: u64) -> Result<u64, Error>;
 
     async fn write_at(&self, data: &[u8], offset: u64) -> Result<u64, Error>;
+
+    async fn write_at_all(&self, mut data: &[u8], mut offset: u64) -> Result<(), Error> {
+        while !data.is_empty() {
+            let written = self.write_at(data, offset).await?;
+            offset += written;
+            data = &data[written as usize..];
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]
