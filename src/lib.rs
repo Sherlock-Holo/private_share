@@ -1,4 +1,5 @@
 use std::io;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use clap::Parser;
@@ -10,13 +11,13 @@ use libp2p::Multiaddr;
 use sha2::{Digest, Sha256};
 use tokio::fs;
 use tracing::level_filters::LevelFilter;
-use tracing::subscriber;
+use tracing::{debug, subscriber};
 use tracing_log::LogTracer;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{fmt, Registry};
 
-use crate::args::Args;
+use crate::args::{Cli, Mode};
 use crate::config::Config;
 use crate::manipulate::http::Server;
 use crate::node::config::Config as NodeConfig;
@@ -32,7 +33,22 @@ mod node;
 mod util;
 
 pub async fn run() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let cli = Cli::parse();
+    let args = match cli.mode {
+        Mode::GenPeerId {
+            secret_key_path,
+            public_key_path,
+        } => {
+            let keypair =
+                load_keypair(Path::new(&secret_key_path), Path::new(&public_key_path)).await?;
+
+            println!("{}", keypair.public().to_peer_id());
+
+            return Ok(());
+        }
+
+        Mode::Run(args) => args,
+    };
 
     init_log(args.debug);
 
@@ -49,6 +65,11 @@ pub async fn run() -> anyhow::Result<()> {
         .into_iter()
         .map(|addr| addr.parse::<Multiaddr>())
         .try_collect::<_, Vec<_>, _>()?;
+
+    pre_create_dir(Path::new(&config.store_dir), Path::new(&config.index_dir)).await?;
+
+    debug!(store_dir = %config.store_dir, index_dir = %config.index_dir, "pre create dir done");
+
     let (mut addr_sender, addr_receiver) = mpsc::channel(peer_addrs.len());
     addr_sender
         .send_all(&mut stream::iter(peer_addrs).map(Ok))
@@ -77,6 +98,21 @@ pub async fn run() -> anyhow::Result<()> {
     tokio::spawn(async move { http_server.listen(config.http_listen).await });
 
     node.run(swarm_addr).await
+}
+
+async fn pre_create_dir(store_dir: &Path, index_dir: &Path) -> io::Result<()> {
+    if let Err(err) = fs::create_dir_all(store_dir).await {
+        if err.kind() != ErrorKind::AlreadyExists {
+            return Err(err);
+        }
+    }
+    if let Err(err) = fs::create_dir_all(index_dir).await {
+        if err.kind() != ErrorKind::AlreadyExists {
+            return Err(err);
+        }
+    }
+
+    Ok(())
 }
 
 fn init_log(debug: bool) {

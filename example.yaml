@@ -1,0 +1,11 @@
+index_dir: /tmp/index
+store_dir: /tmp/store
+secret_key_path: secret.pem
+public_key_path: public.pem
+pre_share_key: share
+refresh_interval: 10s
+sync_file_interval: 20s
+peer_addrs:
+  - /ip4/127.0.0.1/tcp/29999/ws/p2p/12D3KooWRm2KDcYrLKUHb52pdsTknvkYfD6fKevLyAh1HtJhZQsi
+http_listen: 127.0.0.1:9998
+swarm_listen: /ip4/0.0.0.0/tcp/19999/ws
