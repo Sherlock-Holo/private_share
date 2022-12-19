@@ -71,7 +71,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     debug!(store_dir = %config.store_dir, index_dir = %config.index_dir, "pre create dir done");
 
-    let mut addr_queue = DelayQueue::new();
+    let mut addr_queue = DelayQueue::with_capacity(peer_addrs.len());
     for peer_addr in peer_addrs {
         addr_queue.insert(peer_addr, Duration::from_secs(0));
     }
