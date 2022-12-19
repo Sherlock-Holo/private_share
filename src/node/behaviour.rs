@@ -7,8 +7,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use libp2p::core::upgrade::{read_length_prefixed, write_length_prefixed};
+use libp2p::{identify, ping};
 use libp2p::core::ProtocolName;
+use libp2p::core::upgrade::{read_length_prefixed, write_length_prefixed};
 use libp2p::gossipsub::{
     Gossipsub, GossipsubConfigBuilder, GossipsubMessage, MessageAuthenticity, MessageId,
     Sha256Topic, ValidationMode,
@@ -18,14 +19,13 @@ use libp2p::request_response::{
     ProtocolSupport, RequestResponse, RequestResponseCodec, RequestResponseConfig,
 };
 use libp2p::swarm::{keep_alive, NetworkBehaviour};
-use libp2p::{identify, ping};
 use once_cell::sync::Lazy;
 use prost::Message;
 use tap::TapFallible;
 use tracing::{error, info, instrument};
 
+const MAX_CHUNK_SIZE: usize = 10 * 1024 * 1024;
 // max 100MiB
-const MAX_CHUNK_SIZE: usize = 100 * 1024;
 const IDENTIFY_PROTOCOL: &str = "private-share-identify/0.1.0";
 
 pub static FILE_SHARE_TOPIC: Lazy<Sha256Topic> = Lazy::new(|| {

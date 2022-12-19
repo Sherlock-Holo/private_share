@@ -1,21 +1,21 @@
+use std::{future, io};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::{future, io};
 
 use futures_channel::mpsc::Receiver;
 use futures_channel::oneshot::Sender;
 use futures_util::StreamExt;
+use libp2p::{Multiaddr, noise, PeerId, Swarm, tcp, Transport, websocket};
 use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::core::transport::Boxed;
 use libp2p::core::upgrade::{SelectUpgrade, Version};
 use libp2p::dns::TokioDnsConfig;
 use libp2p::identity::Keypair;
 use libp2p::mplex::MplexConfig;
-use libp2p::pnet::PreSharedKey;
+use libp2p::pnet::{PnetConfig, PnetError, PreSharedKey};
 use libp2p::request_response::RequestId;
 use libp2p::yamux::YamuxConfig;
-use libp2p::{noise, tcp, websocket, Multiaddr, PeerId, Swarm, Transport};
 use tap::TapFallible;
 use tokio::time;
 use tokio::time::Interval;
@@ -198,19 +198,19 @@ pub fn create_transport(
     keypair: Keypair,
     handshake_key: PreSharedKey,
 ) -> io::Result<Boxed<(PeerId, StreamMuxerBox)>> {
-    let transport = websocket::WsConfig::new(TokioDnsConfig::system(tcp::tokio::Transport::new(
-        tcp::Config::new().nodelay(true),
-    ))?)
-        /*.and_then(move |conn, connected_point| async move {
-            let conn = PnetConfig::new(handshake_key)
-                .handshake(conn)
-                .await
-                .tap_err(|err| error!(%err, ?connected_point, "handshake failed"))?;
+    let tcp_transport =
+        TokioDnsConfig::system(tcp::tokio::Transport::new(tcp::Config::new().nodelay(true)))?
+            .and_then(move |conn, connected_point| async move {
+                let conn = PnetConfig::new(handshake_key)
+                    .handshake(conn)
+                    .await
+                    .tap_err(|err| error!(%err, ?connected_point, "handshake failed"))?;
 
-            info!(?connected_point, "handshake done");
+                info!(?connected_point, "handshake done");
 
-            Ok::<_, PnetError>(conn)
-        })*/;
+                Ok::<_, PnetError>(conn)
+            });
+    let transport = websocket::WsConfig::new(tcp_transport);
 
     Ok(transport
         .upgrade(Version::V1)
