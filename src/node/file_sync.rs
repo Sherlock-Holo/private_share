@@ -1,15 +1,15 @@
-use std::{future, io};
 use std::collections::{HashMap, HashSet};
 use std::io::{Error, ErrorKind};
 use std::path::Path;
 use std::sync::Arc;
+use std::{future, io};
 
 use futures_channel::oneshot;
 use futures_channel::oneshot::Sender;
-use futures_util::{StreamExt, TryStreamExt};
 use futures_util::stream::FuturesUnordered;
-use libp2p::{PeerId, Swarm};
+use futures_util::{StreamExt, TryStreamExt};
 use libp2p::request_response::RequestId;
+use libp2p::{PeerId, Swarm};
 use rand::prelude::SliceRandom;
 use tap::TapFallible;
 use tokio::fs;
@@ -18,8 +18,8 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, instrument};
 
 use crate::ext::{AsyncFileExt, IterExt};
-use crate::node::{FileRequest, FileResponse, PeerNodeStore};
 use crate::node::behaviour::Behaviour;
+use crate::node::{FileRequest, FileResponse, PeerNodeStore};
 use crate::util::collect_filenames;
 
 const MAX_FILE_CHUNK_SIZE: u64 = 4 * 1024 * 1024; // 4MiB
@@ -61,9 +61,18 @@ impl<'a> FileSync<'a> {
             Some(need_sync_filenames) => need_sync_filenames,
         };
 
-        fs::remove_dir_all(self.index_dir.join(".tmp"))
-            .await
-            .tap_err(|err| error!(%err, "remove tmp dir at first done"))?;
+        match fs::remove_dir_all(self.index_dir.join(".tmp")).await {
+            Err(err) if err.kind() != ErrorKind::NotFound => {
+                error!(%err, "remove tmp dir at first done");
+
+                return Err(err.into());
+            }
+
+            Err(_) => {}
+            Ok(_) => {
+                info!("remove tmp dir at first done");
+            }
+        }
 
         let futs = FuturesUnordered::new();
         for (hash, hash_file) in need_sync_filenames.iter() {

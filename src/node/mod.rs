@@ -1,12 +1,11 @@
-use std::{future, io};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
+use std::{future, io};
 
 use futures_channel::mpsc::Receiver;
 use futures_channel::oneshot::Sender;
 use futures_util::StreamExt;
-use libp2p::{Multiaddr, noise, PeerId, Swarm, tcp, Transport, websocket};
 use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::core::transport::Boxed;
 use libp2p::core::upgrade::{SelectUpgrade, Version};
@@ -16,6 +15,7 @@ use libp2p::mplex::MplexConfig;
 use libp2p::pnet::{PnetConfig, PnetError, PreSharedKey};
 use libp2p::request_response::RequestId;
 use libp2p::yamux::YamuxConfig;
+use libp2p::{noise, tcp, websocket, Multiaddr, PeerId, Swarm, Transport};
 use tap::TapFallible;
 use tokio::time;
 use tokio::time::Interval;
