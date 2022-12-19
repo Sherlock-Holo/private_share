@@ -1,15 +1,16 @@
 use std::io;
 use std::io::ErrorKind;
 use std::path::Path;
+use std::time::Duration;
 
 use clap::Parser;
 use futures_channel::mpsc;
-use futures_util::{stream, SinkExt, StreamExt};
 use itertools::Itertools;
 use libp2p::pnet::PreSharedKey;
 use libp2p::Multiaddr;
 use sha2::{Digest, Sha256};
 use tokio::fs;
+use tokio_util::time::DelayQueue;
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, subscriber};
 use tracing_log::LogTracer;
@@ -70,11 +71,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     debug!(store_dir = %config.store_dir, index_dir = %config.index_dir, "pre create dir done");
 
-    let (mut addr_sender, addr_receiver) = mpsc::channel(peer_addrs.len());
-    addr_sender
-        .send_all(&mut stream::iter(peer_addrs).map(Ok))
-        .await
-        .unwrap();
+    let mut addr_queue = DelayQueue::new();
+    for peer_addr in peer_addrs {
+        addr_queue.insert(peer_addr, Duration::from_secs(0));
+    }
 
     let mut hasher = Sha256::new();
     hasher.update(config.pre_share_key.as_bytes());
@@ -91,7 +91,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let (command_sender, command_receiver) = mpsc::channel(1);
 
-    let mut node = Node::new(node_config, addr_receiver, command_receiver)?;
+    let mut node = Node::new(node_config, addr_queue, command_receiver)?;
     let http_server = Server::new(command_sender);
     let swarm_addr = config.swarm_listen.parse::<Multiaddr>()?;
 

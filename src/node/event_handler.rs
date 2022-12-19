@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use bytes::{Bytes, BytesMut};
 use futures_channel::oneshot::Sender;
@@ -17,6 +17,7 @@ use prost::Message as _;
 use tap::TapFallible;
 use tokio::fs;
 use tokio::fs::File;
+use tokio_util::time::DelayQueue;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::ext::AsyncFileExt;
@@ -32,6 +33,7 @@ pub struct EventHandler<'a> {
     swarm: &'a mut Swarm<Behaviour>,
     peer_stores: &'a mut HashMap<PeerId, PeerNodeStore>,
     file_get_requests: &'a mut HashMap<RequestId, Sender<io::Result<FileResponse>>>,
+    peer_addr_receiver: &'a mut DelayQueue<Multiaddr>,
     peer_addr_connecting: &'a mut HashMap<PeerId, Multiaddr>,
 }
 
@@ -42,6 +44,7 @@ impl<'a> EventHandler<'a> {
         swarm: &'a mut Swarm<Behaviour>,
         peer_stores: &'a mut HashMap<PeerId, PeerNodeStore>,
         file_get_requests: &'a mut HashMap<RequestId, Sender<io::Result<FileResponse>>>,
+        peer_addr_receiver: &'a mut DelayQueue<Multiaddr>,
         peer_addr_connecting: &'a mut HashMap<PeerId, Multiaddr>,
     ) -> Self {
         Self {
@@ -50,6 +53,7 @@ impl<'a> EventHandler<'a> {
             swarm,
             peer_stores,
             file_get_requests,
+            peer_addr_receiver,
             peer_addr_connecting,
         }
     }
@@ -129,12 +133,10 @@ impl<'a> EventHandler<'a> {
                 error!(?peer_id, %error, "outgoing connection error");
 
                 if let Some(peer_id) = peer_id {
-                    if let Some(addr) = self.peer_addr_connecting.get(&peer_id) {
-                        self.swarm
-                            .dial(addr.clone())
-                            .tap_err(|err| error!(%err, %peer_id, %addr, "dial peer failed"))?;
-
+                    if let Some(addr) = self.peer_addr_connecting.remove(&peer_id) {
                         info!(%peer_id, %addr, "re-dialing peer");
+
+                        self.peer_addr_receiver.insert(addr, Duration::from_secs(3));
                     }
                 }
             }
@@ -222,6 +224,7 @@ impl<'a> EventHandler<'a> {
                     }
                 }
             }
+
             GossipsubEvent::Subscribed { peer_id, topic } => {
                 debug!(%peer_id, %topic, "new peer node join the share topic");
             }

@@ -33,6 +33,7 @@ pkcs8 = { version = "0.9", features = ["std"] } # to enable ed25519 error impl s
 clap = { version = "4", features = ["derive"] }
 humantime = "2"
 rand = "0.8"
+tokio-util = { version = "0.7", features = ["time"] }
 
 [dependencies.libp2p]
 version = "0.50"

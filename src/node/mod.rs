@@ -19,6 +19,7 @@ use libp2p::{noise, tcp, websocket, Multiaddr, PeerId, Swarm, Transport};
 use tap::TapFallible;
 use tokio::time;
 use tokio::time::Interval;
+use tokio_util::time::DelayQueue;
 use tracing::{error, info};
 
 use crate::command::Command;
@@ -46,7 +47,7 @@ pub struct Node {
     swarm: Swarm<Behaviour>,
     peer_stores: HashMap<PeerId, PeerNodeStore>,
     file_get_requests: HashMap<RequestId, Sender<io::Result<FileResponse>>>,
-    peer_addr_receiver: Receiver<Multiaddr>,
+    peer_addr_receiver: DelayQueue<Multiaddr>,
     peer_addr_connecting: HashMap<PeerId, Multiaddr>,
     command_receiver: Receiver<Command>,
     refresh_store_ticker: Interval,
@@ -56,7 +57,7 @@ pub struct Node {
 impl Node {
     pub fn new(
         config: Config,
-        peer_addr_receiver: Receiver<Multiaddr>,
+        peer_addr_receiver: DelayQueue<Multiaddr>,
         command_receiver: Receiver<Command>,
     ) -> anyhow::Result<Self> {
         let peer_id = config.key.public().to_peer_id();
@@ -106,13 +107,14 @@ impl Node {
                                 swarm,
                                 &mut self.peer_stores,
                                 &mut self.file_get_requests,
+                                peer_addr_receiver,
                                 &mut self.peer_addr_connecting
                             ).handle_event(event).await?;
                         }
 
                         Some(addr) = peer_addr_receiver.next() => {
                             PeerConnector::new(swarm, &mut self.peer_addr_connecting)
-                                .connect_peer(addr).await?;
+                                .connect_peer(addr.into_inner()).await?;
                         }
 
                         Some(cmd) = command_receiver.next() => {
@@ -161,13 +163,14 @@ impl Node {
                                 swarm,
                                 &mut self.peer_stores,
                                 &mut self.file_get_requests,
+                                peer_addr_receiver,
                                 &mut self.peer_addr_connecting
                             ).handle_event(event).await?;
                         }
 
                         Some(addr) = peer_addr_receiver.next() => {
                             PeerConnector::new(swarm, &mut self.peer_addr_connecting)
-                                .connect_peer(addr).await?;
+                                .connect_peer(addr.into_inner()).await?;
                         }
 
                         Some(cmd) = command_receiver.next() => {
