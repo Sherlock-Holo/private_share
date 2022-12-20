@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
 use std::{future, io};
 
 use futures_channel::mpsc::Receiver;
@@ -222,7 +221,6 @@ pub fn create_transport(
             YamuxConfig::default(),
             MplexConfig::default(),
         ))
-        .timeout(Duration::from_secs(20))
         .boxed())
 }
 

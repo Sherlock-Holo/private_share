@@ -20,7 +20,7 @@ use tokio::fs::File;
 use tokio_util::time::DelayQueue;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::ext::AsyncFileExt;
+use crate::ext::{AsyncFileExt, RequestResponseEventExt};
 use crate::node::behaviour::{
     Behaviour, BehaviourEvent, FileRequest, FileResponse, DISCOVER_SHARE_TOPIC, FILE_SHARE_TOPIC,
 };
@@ -81,9 +81,11 @@ impl<'a> EventHandler<'a> {
                 }
 
                 BehaviourEvent::RequestRespond(event) => {
+                    let request_id = event.request_id();
+
                     self.handle_request_respond_event(event).await?;
 
-                    info!("handle request respond event done");
+                    info!(%request_id, "handle request respond event done");
                 }
 
                 BehaviourEvent::Keepalive(_) | BehaviourEvent::Ping(_) => {}
@@ -239,7 +241,7 @@ impl<'a> EventHandler<'a> {
         Ok(())
     }
 
-    #[instrument(err, skip(self, event))]
+    #[instrument(err, skip(self, event), fields(request_id = % event.request_id()))]
     async fn handle_request_respond_event(
         &mut self,
         event: RequestResponseEvent<FileRequest, FileResponse>,
@@ -257,11 +259,12 @@ impl<'a> EventHandler<'a> {
                 error!(%err, %request_id, %peer, "send file request failed");
 
                 let err = match err {
-                    e @ OutboundFailure::DialFailure
-                    | e @ OutboundFailure::UnsupportedProtocols => Error::new(ErrorKind::Other, e),
-                    e @ OutboundFailure::Timeout => Error::new(ErrorKind::TimedOut, e),
-                    e @ OutboundFailure::ConnectionClosed => {
-                        Error::new(ErrorKind::ConnectionAborted, e)
+                    OutboundFailure::DialFailure | OutboundFailure::UnsupportedProtocols => {
+                        Error::new(ErrorKind::Other, err)
+                    }
+                    OutboundFailure::Timeout => Error::new(ErrorKind::TimedOut, err),
+                    OutboundFailure::ConnectionClosed => {
+                        Error::new(ErrorKind::ConnectionAborted, err)
                     }
                 };
 
@@ -296,7 +299,7 @@ impl<'a> EventHandler<'a> {
                 request,
                 channel,
             } => {
-                info!(%request_id, %peer, "receive file request from peer");
+                info!(%request_id, %peer, ?request, "receive file request from peer");
 
                 let content = self
                     .read_file(
@@ -314,9 +317,9 @@ impl<'a> EventHandler<'a> {
                     .send_response(channel, FileResponse { content })
                     .is_err()
                 {
-                    error!("send file content failed");
+                    error!(?request, "send file content failed");
                 } else {
-                    info!("send file content done");
+                    info!(?request, "send file content done");
                 }
             }
 
@@ -387,44 +390,6 @@ impl<'a> EventHandler<'a> {
     }
 
     #[instrument(err, skip(self))]
-    async fn read_file_directly(
-        &mut self,
-        filename: &str,
-        offset: u64,
-        length: u64,
-    ) -> io::Result<Option<Bytes>> {
-        let file_path = self.store_dir.join(filename);
-
-        let file = match File::open(&file_path).await {
-            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(err) => {
-                error!(%err, ?file_path, "open file failed");
-
-                return Err(err);
-            }
-            Ok(file) => file,
-        };
-
-        info!(?file_path, "open file done");
-
-        let mut buf = BytesMut::zeroed(length as _);
-
-        let read_length = file
-            .read_at(&mut buf, offset)
-            .await
-            .tap_err(|err| error!(%err, offset, length, "read file failed"))?;
-
-        info!(?file_path, offset, read_length, "read file done");
-
-        // Safety: read_length <= length
-        unsafe {
-            buf.set_len(read_length as _);
-        }
-
-        Ok(Some(buf.freeze()))
-    }
-
-    #[instrument(err, skip(self))]
     async fn read_file(
         &mut self,
         filename: &str,
@@ -461,7 +426,7 @@ impl<'a> EventHandler<'a> {
                     Ok(index_file) => index_file,
                 };
 
-                info!(?index_path, "open index file done");
+                info!(filename, ?index_path, "open index file done");
 
                 fs::symlink(&index_path, &file_path).await.tap_err(
                     |err| error!(%err, ?index_path, ?file_path, "create symlink failed"),
@@ -498,7 +463,7 @@ impl<'a> EventHandler<'a> {
                     }
 
                     Ok(index_file) => {
-                        info!(?index_path, "open index file done");
+                        info!(filename, ?index_path, "open index file done");
 
                         index_file
                     }

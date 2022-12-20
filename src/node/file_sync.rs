@@ -22,7 +22,7 @@ use crate::node::behaviour::Behaviour;
 use crate::node::{FileRequest, FileResponse, PeerNodeStore};
 use crate::util::collect_filenames;
 
-const MAX_FILE_CHUNK_SIZE: u64 = 4 * 1024 * 1024; // 4MiB
+const MAX_FILE_CHUNK_SIZE: u64 = 16 * 1024 * 1024; // 4MiB
 
 pub struct FileSync<'a> {
     index_dir: &'a Path,

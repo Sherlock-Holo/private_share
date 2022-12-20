@@ -100,6 +100,8 @@ impl<'a> CommandHandler<'a> {
             Ok(file) => file,
         };
 
+        info!(?file_path, "open file done");
+
         let mut buf = BytesMut::with_capacity(BUF_SIZE);
         let mut hasher = Sha256::new();
 
