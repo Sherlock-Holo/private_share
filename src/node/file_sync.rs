@@ -1,12 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::io::{Error, ErrorKind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::{future, io};
 
 use futures_channel::oneshot;
 use futures_channel::oneshot::Sender;
-use futures_util::stream::FuturesUnordered;
 use futures_util::{StreamExt, TryStreamExt};
 use libp2p::request_response::RequestId;
 use libp2p::{PeerId, Swarm};
@@ -26,10 +25,10 @@ use crate::util::collect_filenames;
 const MAX_FILE_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
 
 /// limit the number of max concurrent sync tasks
-const MAX_CONCURRENT_SYNC_TASKS: usize = 8;
+const MAX_CONCURRENT_SYNC_TASKS: usize = 16;
 
-pub type SyncFilesResult =
-    anyhow::Result<Option<JoinHandle<anyhow::Result<Option<HashMap<String, HashFile>>>>>>;
+pub type SyncFilesResult = anyhow::Result<Option<SyncFileTask>>;
+pub type SyncFileTask = JoinHandle<anyhow::Result<Option<HashMap<String, HashFile>>>>;
 
 pub struct FileSync<'a> {
     index_dir: &'a Path,
@@ -95,7 +94,7 @@ impl<'a> FileSync<'a> {
         };
 
         let mut remaining_task_number = MAX_CONCURRENT_SYNC_TASKS;
-        let futs = FuturesUnordered::new();
+        let mut futs = Vec::with_capacity(MAX_CONCURRENT_SYNC_TASKS.min(need_sync_files.len()));
         for (hash, hash_file) in need_sync_files.iter_mut() {
             if remaining_task_number == 0 {
                 break;
@@ -131,7 +130,7 @@ impl<'a> FileSync<'a> {
 
                 let tmp_index_file = tmp_index_file.clone();
                 let hash = hash.clone();
-                futs.push(async move {
+                futs.push(tokio::spawn(async move {
                     match receiver
                         .await
                         .tap_err(|err| error!(%err, %hash, "receive file response result failed"))?
@@ -157,7 +156,7 @@ impl<'a> FileSync<'a> {
                             Ok(())
                         }
                     }
-                });
+                }));
 
                 offset += length;
 
@@ -173,75 +172,7 @@ impl<'a> FileSync<'a> {
 
         let index_dir = self.index_dir.to_path_buf();
         let store_dir = self.store_dir.to_path_buf();
-        let handle = tokio::spawn(async move {
-            futs.try_for_each(|_| future::ready(Ok(()))).await?;
-            let tmp_dir = index_dir.join(".tmp");
-
-            let mut finish_hash_list = vec![];
-            for hash_file in need_sync_files.values() {
-                // not yet finish sync
-                if hash_file.syncing_offset < hash_file.size {
-                    continue;
-                }
-
-                info!(
-                    ?hash_file,
-                    "hash file is sync done, start move to index store and create symlink"
-                );
-
-                finish_hash_list.push(hash_file.hash.clone());
-
-                for filename in &hash_file.filenames {
-                    let store_file_path = store_dir.join(filename);
-                    let index_file_path = index_dir.join(&hash_file.hash);
-                    let tmp_file_path = tmp_dir.join(&hash_file.hash);
-
-                    match fs::rename(&tmp_file_path, &index_file_path).await {
-                        Err(err) if err.kind() != ErrorKind::NotFound => {
-                            error!(%err, ?tmp_file_path, ?index_file_path, "move temp file to index dir failed");
-
-                            return Err(err.into());
-                        }
-
-                        Err(_) => {}
-
-                        Ok(_) => {
-                            info!(
-                                ?tmp_file_path,
-                                ?index_file_path,
-                                "move temp file to index dir done"
-                            );
-                        }
-                    }
-
-                    fs::symlink(&index_file_path, &store_file_path)
-                        .await
-                        .tap_err(|err| {
-                            error!(
-                                %err, ?index_file_path, ?store_file_path,
-                                "create symlink failed"
-                            );
-                        })?;
-
-                    info!(?index_file_path, ?store_file_path, "create symlink done");
-                }
-
-                info!(
-                    ?hash_file,
-                    "hash file move to index store and create symlink"
-                );
-            }
-
-            for hash in finish_hash_list {
-                need_sync_files.remove(&hash);
-            }
-
-            if need_sync_files.is_empty() {
-                Ok(None)
-            } else {
-                Ok::<_, anyhow::Error>(Some(need_sync_files))
-            }
-        });
+        let handle = handle_sync_files_result(index_dir, store_dir, futs, need_sync_files);
 
         Ok(Some(handle))
     }
@@ -341,4 +272,84 @@ pub struct HashFile {
     peers: Vec<PeerId>,
     size: u64,
     syncing_offset: u64,
+}
+
+fn handle_sync_files_result(
+    index_dir: PathBuf,
+    store_dir: PathBuf,
+    futs: Vec<JoinHandle<anyhow::Result<()>>>,
+    mut need_sync_files: HashMap<String, HashFile>,
+) -> SyncFileTask {
+    tokio::spawn(async move {
+        for fut in futs {
+            fut.await.unwrap()?;
+        }
+
+        let tmp_dir = index_dir.join(".tmp");
+
+        let mut finish_hash_list = vec![];
+        for hash_file in need_sync_files.values() {
+            // not yet finish sync
+            if hash_file.syncing_offset < hash_file.size {
+                continue;
+            }
+
+            info!(
+                ?hash_file,
+                "hash file is sync done, start move to index store and create symlink"
+            );
+
+            finish_hash_list.push(hash_file.hash.clone());
+
+            for filename in &hash_file.filenames {
+                let store_file_path = store_dir.join(filename);
+                let index_file_path = index_dir.join(&hash_file.hash);
+                let tmp_file_path = tmp_dir.join(&hash_file.hash);
+
+                match fs::rename(&tmp_file_path, &index_file_path).await {
+                    Err(err) if err.kind() != ErrorKind::NotFound => {
+                        error!(%err, ?tmp_file_path, ?index_file_path, "move temp file to index dir failed");
+
+                        return Err(err.into());
+                    }
+
+                    Err(_) => {}
+
+                    Ok(_) => {
+                        info!(
+                            ?tmp_file_path,
+                            ?index_file_path,
+                            "move temp file to index dir done"
+                        );
+                    }
+                }
+
+                fs::symlink(&index_file_path, &store_file_path)
+                    .await
+                    .tap_err(|err| {
+                        error!(
+                            %err, ?index_file_path, ?store_file_path,
+                            "create symlink failed"
+                        );
+                    })?;
+
+                info!(?index_file_path, ?store_file_path, "create symlink done");
+            }
+
+            info!(
+                ?hash_file,
+                "hash file move to index store and create symlink"
+            );
+        }
+
+        for hash in finish_hash_list {
+            need_sync_files.remove(&hash);
+        }
+
+        if need_sync_files.is_empty() {
+            Ok(None)
+        } else {
+            Ok::<_, anyhow::Error>(Some(need_sync_files))
+        }
+    })
 }
