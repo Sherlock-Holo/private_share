@@ -46,7 +46,6 @@ features = [
     "macros",
     "ping",
     "dns",
-    "mplex",
     "noise",
     "tcp",
     "pnet",

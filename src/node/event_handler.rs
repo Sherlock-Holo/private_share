@@ -287,7 +287,7 @@ impl<'a> EventHandler<'a> {
         Ok(())
     }
 
-    #[instrument(err, skip(self))]
+    #[instrument(err, skip(self, message))]
     async fn handle_request_respond_success_event(
         &mut self,
         peer: PeerId,

@@ -22,7 +22,14 @@ use crate::node::behaviour::Behaviour;
 use crate::node::{FileRequest, FileResponse, PeerNodeStore};
 use crate::util::collect_filenames;
 
-const MAX_FILE_CHUNK_SIZE: u64 = 16 * 1024 * 1024; // 4MiB
+/// 8MiB
+const MAX_FILE_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
+
+/// limit the number of max concurrent sync tasks
+const MAX_CONCURRENT_SYNC_TASKS: usize = 8;
+
+pub type SyncFilesResult =
+    anyhow::Result<Option<JoinHandle<anyhow::Result<Option<HashMap<String, HashFile>>>>>>;
 
 pub struct FileSync<'a> {
     index_dir: &'a Path,
@@ -30,6 +37,7 @@ pub struct FileSync<'a> {
     swarm: &'a mut Swarm<Behaviour>,
     peer_stores: &'a HashMap<PeerId, PeerNodeStore>,
     file_get_requests: &'a mut HashMap<RequestId, Sender<io::Result<FileResponse>>>,
+    syncing_files: Option<HashMap<String, HashFile>>,
 }
 
 impl<'a> FileSync<'a> {
@@ -39,6 +47,7 @@ impl<'a> FileSync<'a> {
         swarm: &'a mut Swarm<Behaviour>,
         peer_stores: &'a HashMap<PeerId, PeerNodeStore>,
         file_get_requests: &'a mut HashMap<RequestId, Sender<io::Result<FileResponse>>>,
+        syncing_files: Option<HashMap<String, HashFile>>,
     ) -> Self {
         Self {
             index_dir,
@@ -46,41 +55,57 @@ impl<'a> FileSync<'a> {
             swarm,
             peer_stores,
             file_get_requests,
+            syncing_files,
         }
     }
 
     #[instrument(err, skip(self))]
-    pub async fn sync_files(mut self) -> anyhow::Result<Option<JoinHandle<anyhow::Result<()>>>> {
-        let need_sync_filenames = match self.need_sync().await? {
+    pub async fn sync_files(mut self) -> SyncFilesResult {
+        let mut need_sync_files = match self.syncing_files.take() {
             None => {
-                info!("no need sync");
+                let need_sync_filenames = match self.need_sync().await? {
+                    None => {
+                        info!("no need sync");
 
-                return Ok(None);
+                        return Ok(None);
+                    }
+
+                    Some(need_sync_filenames) => need_sync_filenames,
+                };
+
+                info!(?need_sync_filenames, "need sync files");
+
+                match fs::remove_dir_all(self.index_dir.join(".tmp")).await {
+                    Err(err) if err.kind() != ErrorKind::NotFound => {
+                        error!(%err, "remove tmp dir at first done");
+
+                        return Err(err.into());
+                    }
+
+                    Err(_) => {}
+                    Ok(_) => {
+                        info!("remove tmp dir at first done");
+                    }
+                }
+
+                need_sync_filenames
             }
 
             Some(need_sync_filenames) => need_sync_filenames,
         };
 
-        match fs::remove_dir_all(self.index_dir.join(".tmp")).await {
-            Err(err) if err.kind() != ErrorKind::NotFound => {
-                error!(%err, "remove tmp dir at first done");
-
-                return Err(err.into());
-            }
-
-            Err(_) => {}
-            Ok(_) => {
-                info!("remove tmp dir at first done");
-            }
-        }
-
+        let mut remaining_task_number = MAX_CONCURRENT_SYNC_TASKS;
         let futs = FuturesUnordered::new();
-        for (hash, hash_file) in need_sync_filenames.iter() {
-            let tmp_index_file = Arc::new(self.create_temp_index_file(hash).await?);
+        for (hash, hash_file) in need_sync_files.iter_mut() {
+            if remaining_task_number == 0 {
+                break;
+            }
+
+            let tmp_index_file = Arc::new(self.create_or_open_temp_index_file(hash).await?);
 
             info!(%hash, "create temp index file done");
 
-            let mut offset = 0;
+            let mut offset = hash_file.syncing_offset;
             while offset < hash_file.size {
                 let length = MAX_FILE_CHUNK_SIZE;
 
@@ -135,7 +160,15 @@ impl<'a> FileSync<'a> {
                 });
 
                 offset += length;
+
+                remaining_task_number -= 1;
+                // task number is full, need store sync status
+                if remaining_task_number == 0 {
+                    break;
+                }
             }
+
+            hash_file.syncing_offset = offset;
         }
 
         let index_dir = self.index_dir.to_path_buf();
@@ -144,8 +177,21 @@ impl<'a> FileSync<'a> {
             futs.try_for_each(|_| future::ready(Ok(()))).await?;
             let tmp_dir = index_dir.join(".tmp");
 
-            for hash_file in need_sync_filenames.into_values() {
-                for filename in hash_file.filenames {
+            let mut finish_hash_list = vec![];
+            for hash_file in need_sync_files.values() {
+                // not yet finish sync
+                if hash_file.syncing_offset < hash_file.size {
+                    continue;
+                }
+
+                info!(
+                    ?hash_file,
+                    "hash file is sync done, start move to index store and create symlink"
+                );
+
+                finish_hash_list.push(hash_file.hash.clone());
+
+                for filename in &hash_file.filenames {
                     let store_file_path = store_dir.join(filename);
                     let index_file_path = index_dir.join(&hash_file.hash);
                     let tmp_file_path = tmp_dir.join(&hash_file.hash);
@@ -179,16 +225,29 @@ impl<'a> FileSync<'a> {
 
                     info!(?index_file_path, ?store_file_path, "create symlink done");
                 }
+
+                info!(
+                    ?hash_file,
+                    "hash file move to index store and create symlink"
+                );
             }
 
-            Ok::<_, anyhow::Error>(())
+            for hash in finish_hash_list {
+                need_sync_files.remove(&hash);
+            }
+
+            if need_sync_files.is_empty() {
+                Ok(None)
+            } else {
+                Ok::<_, anyhow::Error>(Some(need_sync_files))
+            }
         });
 
         Ok(Some(handle))
     }
 
     #[instrument(err, skip(self))]
-    async fn create_temp_index_file(&self, hash: &str) -> io::Result<File> {
+    async fn create_or_open_temp_index_file(&self, hash: &str) -> io::Result<File> {
         let mut tmp_path = self.index_dir.join(".tmp");
         match fs::create_dir(&tmp_path).await {
             Err(err) if err.kind() != ErrorKind::AlreadyExists => {
@@ -203,7 +262,7 @@ impl<'a> FileSync<'a> {
         tmp_path.push(hash);
 
         OpenOptions::new()
-            .create_new(true)
+            .create(true)
             .read(true)
             .write(true)
             .open(&tmp_path)
@@ -262,6 +321,7 @@ impl<'a> FileSync<'a> {
                         filenames: vec![filename],
                         peers: vec![*peer],
                         size: peer_store.index.get(hash_ref).copied().unwrap(),
+                        syncing_offset: 0,
                     });
             }
         }
@@ -275,9 +335,10 @@ impl<'a> FileSync<'a> {
 }
 
 #[derive(Debug)]
-struct HashFile {
+pub struct HashFile {
     hash: String,
     filenames: Vec<String>,
     peers: Vec<PeerId>,
     size: u64,
+    syncing_offset: u64,
 }

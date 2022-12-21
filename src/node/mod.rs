@@ -7,10 +7,9 @@ use futures_channel::oneshot::Sender;
 use futures_util::StreamExt;
 use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::core::transport::Boxed;
-use libp2p::core::upgrade::{SelectUpgrade, Version};
+use libp2p::core::upgrade::Version;
 use libp2p::dns::TokioDnsConfig;
 use libp2p::identity::Keypair;
-use libp2p::mplex::MplexConfig;
 use libp2p::pnet::{PnetConfig, PnetError, PreSharedKey};
 use libp2p::request_response::RequestId;
 use libp2p::yamux::YamuxConfig;
@@ -22,7 +21,7 @@ use tokio_util::time::DelayQueue;
 use tracing::{error, info};
 
 use crate::command::Command;
-use crate::node::behaviour::{Behaviour, FILE_SHARE_TOPIC};
+use crate::node::behaviour::{Behaviour, FILE_SHARE_TOPIC, MAX_CHUNK_SIZE};
 pub use crate::node::behaviour::{FileRequest, FileResponse};
 use crate::node::command_handler::CommandHandler;
 use crate::node::config::Config;
@@ -88,6 +87,7 @@ impl Node {
             .tap_err(|err| error!(%err, "swarm listen failed"))?;
 
         let mut sync_file_task = None;
+        let mut syncing_files = None;
 
         loop {
             let swarm = &mut self.swarm;
@@ -96,8 +96,8 @@ impl Node {
             let refresh_store_ticker = &mut self.refresh_store_ticker;
             let sync_file_ticker = &mut self.sync_file_ticker;
 
-            match sync_file_task.take() {
-                None => {
+            match (sync_file_task.take(), &syncing_files) {
+                (None, None) => {
                     tokio::select! {
                         Some(event) = swarm.next() => {
                             EventHandler::new(
@@ -137,7 +137,8 @@ impl Node {
                                 &self.store_dir,
                                 swarm,
                                 &self.peer_stores,
-                                &mut self.file_get_requests
+                                &mut self.file_get_requests,
+                                None
                             ).sync_files().await?;
 
                             match task {
@@ -146,6 +147,8 @@ impl Node {
                                 }
 
                                 Some(task) => {
+                                    info!("start sync files");
+
                                     sync_file_task.replace(task);
                                 }
                             }
@@ -153,7 +156,7 @@ impl Node {
                     }
                 }
 
-                Some(mut task) => {
+                (Some(mut task), _) => {
                     tokio::select! {
                         Some(event) = swarm.next() => {
                             EventHandler::new(
@@ -180,9 +183,21 @@ impl Node {
                             ).handle_command(cmd).await
                         }
 
-                        _ = future::poll_fn(|cx| {
+                        // syncing files task is done
+                        result = future::poll_fn(|cx| {
                             Pin::new(&mut task).poll(cx)
                         }) => {
+                            let result_syncing_files = result.unwrap()?;
+
+                            info!(?result_syncing_files, "sync files task done");
+
+                            // files are still syncing, need continue
+                            if let Some(result_syncing_files) = result_syncing_files {
+                                info!(?result_syncing_files, "need continue sync files");
+
+                                syncing_files.replace(result_syncing_files);
+                            }
+
                             sync_file_ticker.reset();
 
                             continue;
@@ -190,6 +205,34 @@ impl Node {
                     }
 
                     sync_file_task.replace(task);
+                }
+
+                // no running syncing files task, but still have files to sync
+                (None, Some(_)) => {
+                    let task = FileSync::new(
+                        &self.index_dir,
+                        &self.store_dir,
+                        swarm,
+                        &self.peer_stores,
+                        &mut self.file_get_requests,
+                        syncing_files.take(),
+                    )
+                    .sync_files()
+                    .await?;
+
+                    match task {
+                        None => {
+                            unreachable!(
+                                "still have files to sync but no syncing files task return"
+                            );
+                        }
+
+                        Some(task) => {
+                            info!("continue sync files");
+
+                            sync_file_task.replace(task);
+                        }
+                    }
                 }
             }
         }
@@ -214,13 +257,14 @@ pub fn create_transport(
             });
     let transport = websocket::WsConfig::new(tcp_transport);
 
+    let mut yamux_config = YamuxConfig::default();
+    yamux_config.set_max_buffer_size(MAX_CHUNK_SIZE * 2);
+    yamux_config.set_receive_window_size((MAX_CHUNK_SIZE * 2) as _);
+
     Ok(transport
         .upgrade(Version::V1)
         .authenticate(noise::NoiseAuthenticated::xx(&keypair).unwrap())
-        .multiplex(SelectUpgrade::new(
-            YamuxConfig::default(),
-            MplexConfig::default(),
-        ))
+        .multiplex(yamux_config)
         .boxed())
 }
 

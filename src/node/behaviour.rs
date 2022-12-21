@@ -24,8 +24,8 @@ use prost::Message;
 use tap::TapFallible;
 use tracing::{error, info, instrument};
 
-/// max 100MiB
-const MAX_CHUNK_SIZE: usize = 32 * 1024 * 1024;
+/// max 16MiB
+pub const MAX_CHUNK_SIZE: usize = 16 * 1024 * 1024;
 const IDENTIFY_PROTOCOL: &str = "private-share-identify/0.1.0";
 
 pub static FILE_SHARE_TOPIC: Lazy<Sha256Topic> = Lazy::new(|| {
