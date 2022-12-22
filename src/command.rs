@@ -23,4 +23,5 @@ pub struct ListFileDetail {
     pub hash: String,
     pub downloaded: bool,
     pub peers: Vec<PeerId>,
+    pub size: u64,
 }

@@ -1,6 +1,7 @@
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 
+use byte_unit::Byte;
 use bytes::Bytes;
 use futures_channel::mpsc::Sender;
 use futures_channel::oneshot;
@@ -146,6 +147,9 @@ impl Server {
                     .into_iter()
                     .map(|peer| peer.to_base58())
                     .collect(),
+                size: Byte::from_bytes(detail.size)
+                    .get_appropriate_unit(true)
+                    .to_string(),
             })
             .collect();
         let list_response = ListResponse { files };

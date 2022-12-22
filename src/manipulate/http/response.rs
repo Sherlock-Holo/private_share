@@ -11,6 +11,7 @@ pub struct ListFile {
     pub hash: String,
     pub downloaded: bool,
     pub peers: Vec<String>,
+    pub size: String,
 }
 
 #[derive(Debug, Deserialize)]

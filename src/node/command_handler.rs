@@ -1,8 +1,10 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::fs::Metadata;
 use std::io::{Error, ErrorKind, SeekFrom};
 use std::mem;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use bytes::BytesMut;
@@ -253,6 +255,8 @@ impl<'a> CommandHandler<'a> {
                         .await
                         .tap_err(|err| error!(%err, ?store_file_path, "read symlink failed"))?;
 
+                    info!(?store_file_path, ?index_file_path, "read symlink done");
+
                     let index_filename = index_file_path.file_name().ok_or_else(|| {
                         error!(?index_file_path, "index file doesn't contain filename");
 
@@ -262,14 +266,28 @@ impl<'a> CommandHandler<'a> {
                         )
                     })?;
 
-                    Ok::<_, Error>((filename, index_filename.to_owned()))
+                    info!(
+                        ?store_file_path,
+                        ?index_file_path,
+                        ?index_filename,
+                        "get index filename done"
+                    );
+
+                    let metadata = fs::metadata(&store_file_path)
+                        .await
+                        .tap_err(|err| error!(%err, "get store file metadata failed"))?;
+
+                    Ok::<_, Error>((filename, index_filename.to_owned(), metadata))
                 })
-                .map_ok(|(filename, hash): (&OsString, OsString)| ListFileDetail {
-                    filename: filename.to_string_lossy().to_string(),
-                    hash: hash.to_string_lossy().to_string(),
-                    downloaded: true,
-                    peers: vec![],
-                })
+                .map_ok(
+                    |(filename, hash, metadata): (&OsString, OsString, Metadata)| ListFileDetail {
+                        filename: filename.to_string_lossy().to_string(),
+                        hash: hash.to_string_lossy().to_string(),
+                        downloaded: true,
+                        peers: vec![],
+                        size: metadata.size(),
+                    },
+                )
                 .try_collect()
                 .await
             {
@@ -301,19 +319,24 @@ impl<'a> CommandHandler<'a> {
             .peer_stores
             .iter()
             .flat_map(|(peer_id, peer_store)| {
-                peer_store
-                    .files
-                    .iter()
-                    .map(|(filename, hash)| (*peer_id, filename, hash))
+                peer_store.files.iter().map(|(filename, hash)| {
+                    let size = *peer_store
+                        .index
+                        .get(hash)
+                        .unwrap_or_else(|| panic!("hash {hash} not in index"));
+
+                    (*peer_id, filename, hash, size)
+                })
             })
-            .filter(|(_, filename, hash)| {
+            .filter(|(_, filename, hash, _)| {
                 !exists_files.contains(&((*filename).clone(), (*hash).clone()))
             })
-            .map(|(peer_id, filename, hash)| ListFileDetail {
+            .map(|(peer_id, filename, hash, size)| ListFileDetail {
                 filename: filename.to_owned(),
                 hash: hash.to_owned(),
                 downloaded: false,
                 peers: vec![peer_id],
+                size,
             });
 
         list_file_details.extend(peer_list_file_details);
