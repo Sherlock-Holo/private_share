@@ -11,7 +11,7 @@ use libp2p::gossipsub::GossipsubEvent;
 use libp2p::request_response::{
     OutboundFailure, RequestId, RequestResponseEvent, RequestResponseMessage,
 };
-use libp2p::swarm::SwarmEvent;
+use libp2p::swarm::{AddressScore, SwarmEvent};
 use libp2p::{identify, Multiaddr, PeerId, Swarm};
 use prost::Message as _;
 use tap::TapFallible;
@@ -342,6 +342,15 @@ impl<'a> EventHandler<'a> {
     async fn handle_identify_event(&mut self, event: identify::Event) -> anyhow::Result<()> {
         match event {
             identify::Event::Received { peer_id, info } => {
+                if !self
+                    .swarm
+                    .external_addresses()
+                    .any(|record| record.addr == info.observed_addr)
+                {
+                    self.swarm
+                        .add_external_address(info.observed_addr, AddressScore::Infinite);
+                }
+
                 let peers = info
                     .listen_addrs
                     .into_iter()
