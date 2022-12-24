@@ -2689,7 +2689,6 @@ dependencies = [
  "futures-util",
  "hex",
  "http",
- "http-body",
  "humantime",
  "itertools",
  "libp2p",

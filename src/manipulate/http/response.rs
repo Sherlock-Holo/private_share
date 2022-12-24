@@ -18,3 +18,8 @@ pub struct ListFile {
 pub struct AddFileRequest {
     pub file_path: String,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct ListFilesQuery {
+    pub include_peer: Option<bool>,
+}
