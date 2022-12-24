@@ -1,15 +1,18 @@
+use std::io;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 
+use axum::body::Body;
+use axum::extract::{DefaultBodyLimit, Multipart};
+use axum::routing::{get, post};
+use axum::Router;
 use byte_unit::Byte;
-use bytes::Bytes;
-use futures_channel::mpsc::Sender;
-use futures_channel::oneshot;
-use futures_util::SinkExt;
-use http_body::Limited;
-use hyper::body::to_bytes;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, StatusCode};
+use bytes::{BufMut, Bytes, BytesMut};
+use futures_channel::mpsc::{Receiver, Sender};
+use futures_channel::{mpsc, oneshot};
+use futures_util::{SinkExt, StreamExt};
+use http::{Request, Response, StatusCode};
+use http_body::{Body as _, Limited};
 use tracing::{error, info, instrument};
 
 use crate::command::Command;
@@ -19,52 +22,51 @@ mod response;
 
 const LIST_FILES_PATH: &str = "/list_files";
 const ADD_FILE_PATH: &str = "/add_file";
+const UPLOAD_FILE_PATH: &str = "/upload_file";
 
 #[derive(Debug, Clone)]
 pub struct Server {
-    command_sender: Sender<Command>,
+    command_sender: Sender<Command<Receiver<io::Result<Bytes>>>>,
 }
 
 impl Server {
-    pub fn new(command_sender: Sender<Command>) -> Self {
+    pub fn new(command_sender: Sender<Command<Receiver<io::Result<Bytes>>>>) -> Self {
         Self { command_sender }
     }
 
     pub async fn listen(self, addr: SocketAddr) -> anyhow::Result<()> {
-        hyper::Server::bind(&addr)
-            .serve(make_service_fn(move |_| {
-                let this = self.clone();
+        let router = Router::new()
+            .route(
+                LIST_FILES_PATH,
+                get({
+                    let mut this = self.clone();
 
-                async move {
-                    Ok::<_, hyper::Error>(service_fn(move |req| {
-                        let mut this = this.clone();
+                    move |body| async move { this.handle_list_files(body).await }
+                }),
+            )
+            .route(
+                ADD_FILE_PATH,
+                post({
+                    let mut this = self.clone();
 
-                        async move { Ok::<_, hyper::Error>(this.handle(req).await) }
-                    }))
-                }
-            }))
+                    move |body| async move { this.handle_add_file(body).await }
+                }),
+            )
+            .route(
+                UPLOAD_FILE_PATH,
+                post({
+                    let mut this = self.clone();
+
+                    move |body| async move { this.handle_upload_file(body).await }
+                }),
+            )
+            .layer(DefaultBodyLimit::disable());
+
+        axum::Server::bind(&addr)
+            .serve(router.into_make_service())
             .await?;
 
         Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn handle(&mut self, req: Request<Body>) -> Response<Body> {
-        let path = req.uri().path();
-        let method = req.method();
-        match (path, method) {
-            (LIST_FILES_PATH, &Method::GET) => self.handle_list_files(req).await,
-            (ADD_FILE_PATH, &Method::POST) => self.handle_add_file(req).await,
-
-            _ => {
-                error!(path, %method, "unknown url path or method");
-
-                Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(Body::empty())
-                    .expect("create response failed")
-            }
-        }
     }
 
     #[instrument(skip(self))]
@@ -254,23 +256,158 @@ impl Server {
             }
         }
     }
+
+    #[instrument(skip(self))]
+    async fn handle_upload_file(&mut self, mut req: Multipart) -> Response<Body> {
+        let mut field = match req.next_field().await {
+            Err(err) => {
+                error!(%err, "get next field failed");
+
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from(err.to_string()))
+                    .expect("create response failed");
+            }
+
+            Ok(None) => {
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from("empty content"))
+                    .expect("create response failed");
+            }
+
+            Ok(Some(field)) => field,
+        };
+
+        let filename = match field.file_name() {
+            None => {
+                error!("no filename found");
+
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from("no filename found"))
+                    .expect("create response failed");
+            }
+
+            Some(filename) => filename.to_string(),
+        };
+
+        let (result_sender, result_receiver) = oneshot::channel();
+        let (mut file_sender, file_stream) = mpsc::channel(1);
+
+        if let Err(err) = self
+            .command_sender
+            .send(Command::UploadFile {
+                filename: filename.to_string(),
+                hash: None,
+                file_stream,
+                result_sender,
+            })
+            .await
+        {
+            error!(%err, %filename, "send upload file command failed");
+
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty())
+                .expect("create response failed");
+        }
+
+        while let Some(result) = field.next().await {
+            match result {
+                Err(err) => {
+                    error!(?err, %filename, "read upload file data failed");
+
+                    let resp = Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Body::from(err.to_string()))
+                        .expect("create response failed");
+
+                    let _ = file_sender
+                        .send(Err(io::Error::new(ErrorKind::Other, err)))
+                        .await;
+
+                    return resp;
+                }
+
+                Ok(data) => {
+                    if let Err(err) = file_sender.send(Ok(data)).await {
+                        error!(%err, %filename, "send upload file data failed");
+
+                        return Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Body::from(err.to_string()))
+                            .expect("create response failed");
+                    }
+
+                    info!(%filename, "send upload file data done");
+                }
+            }
+        }
+
+        info!(%filename, "read all upload file data done");
+
+        if let Err(err) = file_sender.flush().await {
+            error!(%err, %filename, "flush file sender failed");
+
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from(err.to_string()))
+                .expect("create response failed");
+        }
+
+        drop(file_sender);
+
+        match result_receiver.await {
+            Err(err) => {
+                error!(%err, %filename, "receive result failed");
+
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from(err.to_string()))
+                    .expect("create response failed")
+            }
+
+            Ok(Err(err)) => {
+                error!(%err, %filename, "handle upload file command failed");
+
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from(err.to_string()))
+                    .expect("create response failed")
+            }
+
+            Ok(Ok(_)) => {
+                info!(%filename, "upload file done");
+
+                Response::new(Body::empty())
+            }
+        }
+    }
 }
 
 #[instrument(skip(req))]
 async fn read_body(req: Request<Body>) -> Result<Bytes, Response<Body>> {
     const MAX_BODY_SIZE: usize = 16 * 1024; // 16KiB
 
-    let body = Limited::new(req.into_body(), MAX_BODY_SIZE);
-    match to_bytes(body).await {
-        Err(err) => {
-            error!(%err, "read body failed");
+    let mut buf = BytesMut::with_capacity(MAX_BODY_SIZE);
+    let mut body = Limited::new(req.into_body(), MAX_BODY_SIZE);
+    while let Some(data) = body.data().await {
+        match data {
+            Err(err) => {
+                error!(%err, "read body failed");
 
-            Err(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Body::from(err.to_string()))
-                .expect("create response failed"))
+                return Err(Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from(err.to_string()))
+                    .expect("create response failed"));
+            }
+
+            Ok(data) => {
+                buf.put(data);
+            }
         }
-
-        Ok(body) => Ok(body),
     }
+
+    Ok(buf.freeze())
 }

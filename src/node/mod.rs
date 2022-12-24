@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::{future, io};
 
+use bytes::Bytes;
 use futures_channel::mpsc::Receiver;
 use futures_channel::oneshot::Sender;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::core::transport::Boxed;
 use libp2p::core::upgrade::Version;
@@ -39,7 +40,7 @@ mod message;
 mod peer_connector;
 mod refresh_store_handler;
 
-pub struct Node {
+pub struct Node<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> {
     index_dir: PathBuf,
     store_dir: PathBuf,
     swarm: Swarm<Behaviour>,
@@ -47,16 +48,16 @@ pub struct Node {
     file_get_requests: HashMap<RequestId, Sender<io::Result<FileResponse>>>,
     peer_addr_receiver: DelayQueue<Multiaddr>,
     peer_addr_connecting: HashMap<PeerId, Multiaddr>,
-    command_receiver: Receiver<Command>,
+    command_receiver: Receiver<Command<FileStream>>,
     refresh_store_ticker: Interval,
     sync_file_ticker: Interval,
 }
 
-impl Node {
+impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node<FileStream> {
     pub fn new(
         config: Config,
         peer_addr_receiver: DelayQueue<Multiaddr>,
-        command_receiver: Receiver<Command>,
+        command_receiver: Receiver<Command<FileStream>>,
     ) -> anyhow::Result<Self> {
         let peer_id = config.key.public().to_peer_id();
 

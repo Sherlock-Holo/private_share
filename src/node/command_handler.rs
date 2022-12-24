@@ -5,24 +5,25 @@ use std::fs::Metadata;
 use std::io::{Error, ErrorKind, SeekFrom};
 use std::mem;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures_channel::oneshot::Sender;
-use futures_util::{stream, StreamExt, TryStreamExt};
+use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use libp2p::PeerId;
+use rand::distributions::{Alphanumeric, DistString};
 use sha2::digest::FixedOutput;
 use sha2::{Digest, Sha256};
 use tap::TapFallible;
 use tokio::fs;
 use tokio::fs::{File, OpenOptions};
 use tokio::io;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tracing::{error, info, instrument};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tracing::{error, info, instrument, warn};
 
 use crate::command::{Command, ListFileDetail};
 use crate::node::PeerNodeStore;
-use crate::util::collect_filenames;
+use crate::util::{collect_filenames, create_temp_dir};
 
 const BUF_SIZE: usize = 1024 * 1024; // 1MiB
 
@@ -46,7 +47,12 @@ impl<'a> CommandHandler<'a> {
     }
 
     #[instrument(skip(self))]
-    pub async fn handle_command(mut self, cmd: Command) {
+    pub async fn handle_command<
+        FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static,
+    >(
+        mut self,
+        cmd: Command<FileStream>,
+    ) {
         match cmd {
             Command::AddFile {
                 file_path,
@@ -66,6 +72,23 @@ impl<'a> CommandHandler<'a> {
                     .await;
 
                 info!(include_peer, "handle list file command done");
+            }
+
+            Command::UploadFile {
+                filename,
+                hash,
+                file_stream,
+                result_sender,
+            } => {
+                self.handle_upload_file_command(
+                    &filename,
+                    hash.as_deref(),
+                    file_stream,
+                    result_sender,
+                )
+                .await;
+
+                info!(%filename, hash, "uploading file");
             }
         }
     }
@@ -367,4 +390,191 @@ impl<'a> CommandHandler<'a> {
 
         let _ = result_sender.send(Ok(list_file_details.into_iter().collect()));
     }
+
+    #[instrument(skip(self, file_stream))]
+    async fn handle_upload_file_command<
+        FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static,
+    >(
+        &mut self,
+        filename: &str,
+        hash: Option<&str>,
+        file_stream: FileStream,
+        result_sender: Sender<io::Result<()>>,
+    ) {
+        let store_path = self.store_dir.join(filename);
+        if let Some(hash) = hash {
+            info!("command has hash");
+
+            let index_path = self.index_dir.join(hash);
+
+            match fs::metadata(&index_path).await {
+                Err(err) if err.kind() != ErrorKind::NotFound => {
+                    error!(%err, ?index_path, "get index file metadata failed");
+
+                    let _ = result_sender.send(Err(err));
+
+                    return;
+                }
+
+                Ok(_) => {
+                    info!(?index_path, "index file exists");
+
+                    if let Err(err) = fs::symlink(&index_path, &store_path).await {
+                        if err.kind() == ErrorKind::AlreadyExists {
+                            info!(?store_path, ?index_path, "store file exists");
+
+                            let _ = result_sender.send(Ok(()));
+
+                            return;
+                        }
+
+                        error!(%err, ?store_path, ?index_path, "create symlink failed");
+
+                        let _ = result_sender.send(Err(err));
+
+                        return;
+                    }
+
+                    info!(?store_path, ?index_path, "create symlink done");
+
+                    let _ = result_sender.send(Ok(()));
+
+                    return;
+                }
+
+                Err(_) => {}
+            }
+        }
+
+        let filename = filename.to_owned();
+        let hash = hash.map(ToOwned::to_owned);
+        let index_dir = self.index_dir.to_owned();
+        let store_dir = self.store_dir.to_owned();
+        tokio::spawn(async move {
+            upload_file(
+                &filename,
+                hash.as_deref(),
+                index_dir,
+                store_dir,
+                file_stream,
+                result_sender,
+            )
+            .await;
+        });
+
+        info!("start upload file task");
+    }
+}
+
+#[instrument(skip(file_stream))]
+async fn upload_file<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static>(
+    filename: &str,
+    hash: Option<&str>,
+    index_dir: PathBuf,
+    store_dir: PathBuf,
+    mut file_stream: FileStream,
+    result_sender: Sender<io::Result<()>>,
+) {
+    let mut tmp_path = match create_temp_dir(&index_dir).await {
+        Err(err) => {
+            let _ = result_sender.send(Err(err));
+
+            return;
+        }
+
+        Ok(tmp_path) => tmp_path,
+    };
+
+    info!(?tmp_path, "create temp index dir done");
+
+    let mut hasher = Sha256::new();
+    let tmp_filename = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+    tmp_path.push(format!(".upload.{tmp_filename}"));
+
+    info!(?tmp_path, "generate upload temp file path done");
+
+    let mut upload_file = match OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&tmp_path)
+        .await
+    {
+        Err(err) => {
+            error!(%err, ?tmp_path, "create upload temp file failed");
+
+            let _ = result_sender.send(Err(err));
+
+            return;
+        }
+
+        Ok(file) => file,
+    };
+
+    while let Some(result) = file_stream.next().await {
+        let mut data = match result {
+            Err(err) => {
+                error!("read file content failed");
+
+                let _ = result_sender.send(Err(err));
+
+                return;
+            }
+
+            Ok(data) => data,
+        };
+
+        hasher.update(&data);
+
+        if let Err(err) = upload_file.write_all_buf(&mut data).await {
+            error!(%err, "write data to upload temp file failed");
+
+            let _ = result_sender.send(Err(err));
+
+            return;
+        }
+    }
+
+    let hash_result = hex::encode_upper(hasher.finalize_fixed());
+    if let Some(hash) = hash {
+        if hash_result != hash {
+            warn!(%hash_result, "hash result is not equal request hash");
+        }
+    }
+
+    info!(%hash_result, "write data to upload temp file done");
+
+    let index_path = index_dir.join(hash_result);
+
+    match fs::rename(&tmp_path, &index_path).await {
+        Err(err) if err.kind() != ErrorKind::AlreadyExists => {
+            error!(%err, ?index_path, ?tmp_path, "move upload temp file to index dir failed");
+
+            let _ = result_sender.send(Err(err));
+
+            return;
+        }
+
+        Err(_) => info!(?index_path, ?tmp_path, "same hash index file exists"),
+        Ok(_) => info!(
+            ?index_path,
+            ?tmp_path,
+            "move upload temp file to index dir done"
+        ),
+    }
+
+    let store_path = store_dir.join(filename);
+    match fs::symlink(&index_path, &store_path).await {
+        Err(err) if err.kind() != ErrorKind::AlreadyExists => {
+            error!(%err, ?index_path, ?store_path, "create symlink failed");
+
+            let _ = result_sender.send(Err(err));
+
+            return;
+        }
+
+        Err(_) => info!(?index_path, ?store_path, "same filename store file exists"),
+        Ok(_) => info!(?index_path, ?store_path, "create symlink done"),
+    }
+
+    let _ = result_sender.send(Ok(()));
 }

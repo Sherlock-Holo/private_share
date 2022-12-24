@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::io;
-use std::path::Path;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 use ed25519::pkcs8::{DecodePrivateKey, DecodePublicKey, PublicKeyBytes};
 use ed25519::KeypairBytes;
@@ -10,7 +11,7 @@ use libp2p::identity::Keypair;
 use tap::TapFallible;
 use tokio::fs;
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{error, instrument};
+use tracing::{error, info, instrument};
 
 #[instrument(err)]
 pub async fn collect_filenames(dir: &Path) -> io::Result<Vec<OsString>> {
@@ -30,6 +31,31 @@ pub async fn collect_filenames(dir: &Path) -> io::Result<Vec<OsString>> {
         })
         .try_collect()
         .await
+}
+
+#[instrument(err)]
+pub async fn create_temp_dir(path: &Path) -> io::Result<PathBuf> {
+    let tmp_path = path.join(".tmp");
+
+    match fs::create_dir_all(&tmp_path).await {
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+            info!(?path, ?tmp_path, "temp dir exists");
+
+            Ok(tmp_path)
+        }
+
+        Err(err) => {
+            error!(%err, ?path, ?tmp_path, "create temp die failed");
+
+            Err(err)
+        }
+
+        Ok(_) => {
+            info!(?path, ?tmp_path, "create temp dir done");
+
+            Ok(tmp_path)
+        }
+    }
 }
 
 pub async fn load_keypair(secret_path: &Path, public_path: &Path) -> anyhow::Result<Keypair> {
