@@ -7,9 +7,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use byte_unit::Byte;
 use bytes::Bytes;
-use futures_channel::mpsc::{Receiver, Sender};
+use futures_channel::mpsc::Sender;
 use futures_channel::{mpsc, oneshot};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt, TryStreamExt};
 use http::StatusCode;
 use tracing::{error, info, instrument};
 
@@ -22,13 +22,15 @@ const LIST_FILES_PATH: &str = "/list_files";
 const ADD_FILE_PATH: &str = "/add_file";
 const UPLOAD_FILE_PATH: &str = "/upload_file";
 
+type UploadFileReceiver = impl Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static;
+
 #[derive(Debug, Clone)]
 pub struct Server {
-    command_sender: Sender<Command<Receiver<io::Result<Bytes>>>>,
+    command_sender: Sender<Command<UploadFileReceiver>>,
 }
 
 impl Server {
-    pub fn new(command_sender: Sender<Command<Receiver<io::Result<Bytes>>>>) -> Self {
+    pub fn new(command_sender: Sender<Command<UploadFileReceiver>>) -> Self {
         Self { command_sender }
     }
 
@@ -184,7 +186,7 @@ impl Server {
 
     #[instrument(skip(self))]
     async fn handle_upload_file(&mut self, mut req: Multipart) -> Result<(), (StatusCode, String)> {
-        let mut field = match req.next_field().await {
+        let field = match req.next_field().await {
             Err(err) => {
                 error!(%err, "get next field failed");
 
@@ -207,7 +209,12 @@ impl Server {
         };
 
         let (result_sender, result_receiver) = oneshot::channel();
-        let (mut file_sender, file_stream) = mpsc::channel(1);
+        let (file_sender, file_stream) = mpsc::channel(1);
+        let mut file_sender = file_sender.sink_map_err(|err| {
+            error!(%err, %filename, "send upload file data failed");
+
+            io::Error::new(ErrorKind::Other, err)
+        });
 
         if let Err(err) = self
             .command_sender
@@ -224,41 +231,26 @@ impl Server {
             return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
         }
 
-        while let Some(result) = field.next().await {
-            match result {
-                Err(err) => {
-                    error!(?err, %filename, "read upload file data failed");
+        if let Err(err) = field
+            .map_ok(Ok::<_, io::Error>)
+            .map_err(|err| {
+                error!(%err, %filename, "read upload file data failed");
 
-                    let err_msg = err.to_string();
+                io::Error::new(ErrorKind::Other, err)
+            })
+            .forward(&mut file_sender)
+            .await
+        {
+            let err_msg = err.to_string();
 
-                    let _ = file_sender
-                        .send(Err(io::Error::new(ErrorKind::Other, err)))
-                        .await;
+            let _ = file_sender
+                .send(Err(io::Error::new(ErrorKind::Other, err)))
+                .await;
 
-                    return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
-                }
-
-                Ok(data) => {
-                    if let Err(err) = file_sender.send(Ok(data)).await {
-                        error!(%err, %filename, "send upload file data failed");
-
-                        return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
-                    }
-
-                    info!(%filename, "send upload file data done");
-                }
-            }
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
         }
 
         info!(%filename, "read all upload file data done");
-
-        if let Err(err) = file_sender.flush().await {
-            error!(%err, %filename, "flush file sender failed");
-
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
-        }
-
-        drop(file_sender);
 
         match result_receiver.await {
             Err(err) => {

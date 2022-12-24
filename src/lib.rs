@@ -1,3 +1,5 @@
+#![feature(type_alias_impl_trait)]
+
 use std::io;
 use std::io::ErrorKind;
 use std::path::Path;
