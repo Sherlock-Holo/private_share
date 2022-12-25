@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use bytes::{Bytes, BytesMut};
+use derive_builder::Builder;
 use futures_channel::oneshot::Sender;
 use itertools::Itertools;
 use libp2p::gossipsub::GossipsubEvent;
@@ -24,9 +25,12 @@ use crate::ext::{AsyncFileExt, RequestResponseEventExt};
 use crate::node::behaviour::{
     Behaviour, BehaviourEvent, FileRequest, FileResponse, DISCOVER_SHARE_TOPIC, FILE_SHARE_TOPIC,
 };
+use crate::node::file_cache::FileCache;
 use crate::node::message::{DiscoverMessage, FileMessage, Peer};
 use crate::node::PeerNodeStore;
 
+#[derive(Builder)]
+#[builder(pattern = "owned")]
 pub struct EventHandler<'a> {
     index_dir: &'a Path,
     store_dir: &'a Path,
@@ -35,29 +39,10 @@ pub struct EventHandler<'a> {
     file_get_requests: &'a mut HashMap<RequestId, Sender<io::Result<FileResponse>>>,
     peer_addr_receiver: &'a mut DelayQueue<Multiaddr>,
     peer_addr_connecting: &'a mut HashMap<PeerId, Multiaddr>,
+    cache_files: &'a mut FileCache,
 }
 
 impl<'a> EventHandler<'a> {
-    pub fn new(
-        index_dir: &'a Path,
-        store_dir: &'a Path,
-        swarm: &'a mut Swarm<Behaviour>,
-        peer_stores: &'a mut HashMap<PeerId, PeerNodeStore>,
-        file_get_requests: &'a mut HashMap<RequestId, Sender<io::Result<FileResponse>>>,
-        peer_addr_receiver: &'a mut DelayQueue<Multiaddr>,
-        peer_addr_connecting: &'a mut HashMap<PeerId, Multiaddr>,
-    ) -> Self {
-        Self {
-            index_dir,
-            store_dir,
-            swarm,
-            peer_stores,
-            file_get_requests,
-            peer_addr_receiver,
-            peer_addr_connecting,
-        }
-    }
-
     #[instrument(err, skip(self, event))]
     pub async fn handle_event<THandlerErr>(
         mut self,
@@ -419,7 +404,11 @@ impl<'a> EventHandler<'a> {
             Err(_) => {
                 info!(filename, hash, "symlink file not exists, create it");
 
-                let index_file = match File::open(&index_path).await {
+                let index_file = match self
+                    .cache_files
+                    .get_or_open_file(hash, || async { File::open(&index_path).await })
+                    .await
+                {
                     Err(err) if err.kind() == ErrorKind::NotFound => {
                         info!(filename, hash, "file not found");
 
@@ -458,7 +447,11 @@ impl<'a> EventHandler<'a> {
                     return Err(Error::new(ErrorKind::InvalidData, format!("file {filename} found, but hash {hash} incorrect, symlink {file_index_path:?}")));
                 }
 
-                match File::open(&index_path).await {
+                match self
+                    .cache_files
+                    .get_or_open_file(hash, || async { File::open(&index_path).await })
+                    .await
+                {
                     Err(err) if err.kind() == ErrorKind::NotFound => {
                         info!(filename, hash, "file not found");
 

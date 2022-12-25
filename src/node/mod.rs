@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::{future, io};
 
 use bytes::Bytes;
@@ -26,7 +27,8 @@ use crate::node::behaviour::{Behaviour, FILE_SHARE_TOPIC, MAX_CHUNK_SIZE};
 pub use crate::node::behaviour::{FileRequest, FileResponse};
 use crate::node::command_handler::CommandHandler;
 use crate::node::config::Config;
-use crate::node::event_handler::EventHandler;
+use crate::node::event_handler::EventHandlerBuilder;
+use crate::node::file_cache::FileCache;
 use crate::node::file_sync::FileSync;
 use crate::node::peer_connector::PeerConnector;
 use crate::node::refresh_store_handler::RefreshStoreHandler;
@@ -35,10 +37,13 @@ mod behaviour;
 mod command_handler;
 pub mod config;
 mod event_handler;
+mod file_cache;
 mod file_sync;
 mod message;
 mod peer_connector;
 mod refresh_store_handler;
+
+const FILE_CACHE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Node<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> {
     index_dir: PathBuf,
@@ -51,6 +56,7 @@ pub struct Node<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 's
     command_receiver: Receiver<Command<FileStream>>,
     refresh_store_ticker: Interval,
     sync_file_ticker: Interval,
+    cache_files: FileCache,
 }
 
 impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node<FileStream> {
@@ -79,6 +85,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
             command_receiver,
             refresh_store_ticker: time::interval(config.refresh_store_interval),
             sync_file_ticker: time::interval(config.sync_file_interval),
+            cache_files: FileCache::new(),
         })
     }
 
@@ -97,19 +104,24 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
             let refresh_store_ticker = &mut self.refresh_store_ticker;
             let sync_file_ticker = &mut self.sync_file_ticker;
 
+            self.cache_files.clean_timeout(FILE_CACHE_TIMEOUT);
+
             match (sync_file_task.take(), &syncing_files) {
                 (None, None) => {
                     tokio::select! {
                         Some(event) = swarm.next() => {
-                            EventHandler::new(
-                                &self.index_dir,
-                                &self.store_dir,
-                                swarm,
-                                &mut self.peer_stores,
-                                &mut self.file_get_requests,
-                                peer_addr_receiver,
-                                &mut self.peer_addr_connecting
-                            ).handle_event(event).await?;
+                            EventHandlerBuilder::default()
+                            .index_dir(&self.index_dir)
+                            .store_dir( &self.store_dir)
+                            .swarm(swarm)
+                            .peer_stores( &mut self.peer_stores)
+                            .file_get_requests( &mut self.file_get_requests)
+                            .peer_addr_receiver(peer_addr_receiver)
+                            .peer_addr_connecting(&mut self.peer_addr_connecting)
+                            .cache_files(&mut self.cache_files)
+                            .build()
+                            .unwrap()
+                            .handle_event(event).await?;
                         }
 
                         Some(addr) = peer_addr_receiver.next() => {
@@ -160,15 +172,18 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
                 (Some(mut task), _) => {
                     tokio::select! {
                         Some(event) = swarm.next() => {
-                            EventHandler::new(
-                                &self.index_dir,
-                                &self.store_dir,
-                                swarm,
-                                &mut self.peer_stores,
-                                &mut self.file_get_requests,
-                                peer_addr_receiver,
-                                &mut self.peer_addr_connecting
-                            ).handle_event(event).await?;
+                            EventHandlerBuilder::default()
+                            .index_dir(&self.index_dir)
+                            .store_dir( &self.store_dir)
+                            .swarm(swarm)
+                            .peer_stores( &mut self.peer_stores)
+                            .file_get_requests( &mut self.file_get_requests)
+                            .peer_addr_receiver(peer_addr_receiver)
+                            .peer_addr_connecting(&mut self.peer_addr_connecting)
+                            .cache_files(&mut self.cache_files)
+                            .build()
+                            .unwrap()
+                            .handle_event(event).await?;
                         }
 
                         Some(addr) = peer_addr_receiver.next() => {

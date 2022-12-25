@@ -38,6 +38,8 @@ humantime = "2"
 byte-unit = { version = "4", default-features = false, features = ["alloc"] }
 rand = "0.8"
 tokio-util = { version = "0.7", features = ["time"] }
+lru = "0.8"
+derive_builder = "0.12"
 
 [dependencies.libp2p]
 version = "0.50"
