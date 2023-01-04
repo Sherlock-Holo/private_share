@@ -97,7 +97,11 @@ pub async fn run() -> anyhow::Result<()> {
     let http_server = Server::new(command_sender);
     let swarm_addr = config.swarm_listen.parse::<Multiaddr>()?;
 
-    tokio::spawn(async move { http_server.listen(config.http_listen).await });
+    tokio::spawn(async move {
+        http_server
+            .listen(config.http_listen, &config.http_ui_resources)
+            .await
+    });
 
     node.run(swarm_addr).await
 }
