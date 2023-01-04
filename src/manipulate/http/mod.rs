@@ -2,18 +2,16 @@ use std::io;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 
-use axum::body::{Body, BoxBody};
 use axum::extract::{DefaultBodyLimit, Multipart, Query};
-use axum::routing::{any_service, get, post};
-use axum::{body, Json, Router};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use axum_extra::routing::SpaRouter;
 use byte_unit::Byte;
 use bytes::Bytes;
 use futures_channel::mpsc::Sender;
 use futures_channel::{mpsc, oneshot};
 use futures_util::{SinkExt, Stream, StreamExt, TryStreamExt};
-use http::{Request, Response, StatusCode};
-use tower::{service_fn, ServiceExt};
-use tower_http::services::ServeDir;
+use http::StatusCode;
 use tracing::{error, info, instrument};
 
 use crate::command::Command;
@@ -65,14 +63,9 @@ impl Server {
             )
             .layer(DefaultBodyLimit::disable());
 
-        let serve_dir = ServeDir::new(http_ui_resources);
-        let router = Router::new().nest("/api", api_router).nest_service(
-            "/ui",
-            any_service(service_fn(move |req| {
-                let serve_dir = serve_dir.clone();
-                async move { Ok(ui_handle(req, serve_dir).await) }
-            })),
-        );
+        let router = Router::new()
+            .nest("/api", api_router)
+            .merge(SpaRouter::new("/ui", http_ui_resources));
 
         axum::Server::bind(&addr)
             .serve(router.into_make_service())
@@ -283,19 +276,5 @@ impl Server {
                 Ok(())
             }
         }
-    }
-}
-
-async fn ui_handle(req: Request<Body>, serve_dir: ServeDir) -> Response<BoxBody> {
-    match serve_dir.oneshot(req).await {
-        Err(err) => {
-            let resp = Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from(format!("server error: {err}")))
-                .unwrap();
-
-            resp.map(body::boxed)
-        }
-        Ok(resp) => resp.map(body::boxed),
     }
 }

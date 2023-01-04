@@ -327,6 +327,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-extra"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9a320103719de37b7b4da4c8eb629d4573f6bcfd3dfe80d3208806895ccf81d"
+dependencies = [
+ "axum",
+ "bytes",
+ "futures-util",
+ "http",
+ "mime",
+ "pin-project-lite 0.2.9",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
 name = "base-x"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2721,6 +2740,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "axum-extra",
  "bs58",
  "byte-unit",
  "bytes",
@@ -2749,7 +2769,6 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tower",
- "tower-http",
  "tracing",
  "tracing-log",
  "tracing-subscriber",

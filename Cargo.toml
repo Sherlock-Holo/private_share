@@ -31,7 +31,7 @@ once_cell = "1"
 itertools = "0.10"
 http = "0.2"
 axum = { version = "0.6", features = ["http2", "multipart"] }
-tower-http = { version = "0.3", features = ["fs"] }
+axum-extra = { version = "0.4", features = ["spa"] }
 tower = "0.4"
 ed25519 = { version = "1", features = ["pkcs8", "pem", "alloc"] }
 pkcs8 = { version = "0.9", features = ["std"] } # to enable ed25519 error impl std error
