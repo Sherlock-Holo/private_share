@@ -14,14 +14,25 @@ class PeerList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView.builder(
-        itemCount: peers.length,
-        itemBuilder: (context, index) {
-          final peer = peers[index];
+    return ListView.separated(
+      itemCount: peers.length,
+      itemBuilder: (context, index) {
+        final peer = peers[index];
 
-          return ListTile(
-            title: Text(peer.peerId),
-          );
-        });
+        return Card(
+          child: ListTile(
+            leading: const Icon(Icons.devices),
+            title: Row(children: [
+              const Text(
+                "peer id: ",
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              SelectableText(peer.peerId)
+            ]),
+          ),
+        );
+      },
+      separatorBuilder: (BuildContext context, int index) => const Divider(),
+    );
   }
 }

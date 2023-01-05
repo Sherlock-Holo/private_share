@@ -7,17 +7,22 @@ class FileList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView.builder(
+    return ListView.separated(
       itemCount: files.length,
       itemBuilder: (context, index) {
         var file = files[index];
 
-        return ListTile(
-          title: Text(file.filename),
-          trailing: Icon(
-              file.downloaded ? Icons.download_done : Icons.download_outlined),
+        return Card(
+          child: ListTile(
+            leading: const Icon(Icons.insert_drive_file_outlined),
+            title: SelectableText(file.filename),
+            trailing: Icon(file.downloaded
+                ? Icons.download_done
+                : Icons.download_outlined),
+          ),
         );
       },
+      separatorBuilder: (BuildContext context, int index) => const Divider(),
     );
   }
 }
