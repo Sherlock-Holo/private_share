@@ -27,7 +27,7 @@ class PeerList extends StatelessWidget {
                 "peer id: ",
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
-              SelectableText(peer.peerId)
+              Flexible(child: SelectableText(peer.peerId))
             ]),
           ),
         );

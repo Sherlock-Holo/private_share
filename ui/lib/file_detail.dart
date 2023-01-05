@@ -19,6 +19,15 @@ class FileList extends StatelessWidget {
             trailing: Icon(file.downloaded
                 ? Icons.download_done
                 : Icons.download_outlined),
+            subtitle: Row(
+              children: [
+                const Text(
+                  "Hash: ",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                Flexible(child: SelectableText(file.hash))
+              ],
+            ),
           ),
         );
       },
