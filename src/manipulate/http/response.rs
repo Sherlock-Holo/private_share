@@ -23,3 +23,14 @@ pub struct AddFileRequest {
 pub struct ListFilesQuery {
     pub include_peer: Option<bool>,
 }
+
+#[derive(Debug, Serialize)]
+pub struct ListPeersResponse {
+    pub peers: Vec<ListPeer>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListPeer {
+    pub peer: String,
+    pub connected_addrs: Vec<String>,
+}

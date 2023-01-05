@@ -2,7 +2,7 @@ use std::io;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 
-use axum::extract::{DefaultBodyLimit, Multipart, Query};
+use axum::extract::{DefaultBodyLimit, Multipart, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::routing::SpaRouter;
@@ -15,13 +15,16 @@ use http::StatusCode;
 use tracing::{error, info, instrument};
 
 use crate::command::Command;
-use crate::manipulate::http::response::{AddFileRequest, ListFile, ListFilesQuery, ListResponse};
+use crate::manipulate::http::response::{
+    AddFileRequest, ListFile, ListFilesQuery, ListPeer, ListPeersResponse, ListResponse,
+};
 
 mod response;
 
 const LIST_FILES_PATH: &str = "/list_files";
 const ADD_FILE_PATH: &str = "/add_file";
 const UPLOAD_FILE_PATH: &str = "/upload_file";
+const LIST_PEERS_PATH: &str = "/list_peers";
 
 type UploadFileReceiver = impl Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static;
 
@@ -36,36 +39,38 @@ impl Server {
     }
 
     pub async fn listen(self, addr: SocketAddr, http_ui_resources: &str) -> anyhow::Result<()> {
-        let api_router = Router::new()
-            .route(
-                LIST_FILES_PATH,
-                get({
-                    let mut this = self.clone();
-
-                    move |body| async move { this.handle_list_files(body).await }
-                }),
-            )
-            .merge(Router::new().route(
-                ADD_FILE_PATH,
-                post({
-                    let mut this = self.clone();
-
-                    move |body| async move { this.handle_add_file(body).await }
-                }),
-            ))
-            .route(
-                UPLOAD_FILE_PATH,
-                post({
-                    let mut this = self.clone();
-
-                    move |body| async move { this.handle_upload_file(body).await }
-                }),
-            )
-            .layer(DefaultBodyLimit::disable());
+        let api_router =
+            Router::new()
+                .route(
+                    LIST_FILES_PATH,
+                    get(|State(mut server): State<Server>, body| async move {
+                        server.handle_list_files(body).await
+                    }),
+                )
+                .merge(Router::new().route(
+                    ADD_FILE_PATH,
+                    post(|State(mut server): State<Server>, body| async move {
+                        server.handle_add_file(body).await
+                    }),
+                ))
+                .route(
+                    UPLOAD_FILE_PATH,
+                    post(|State(mut server): State<Server>, body| async move {
+                        server.handle_upload_file(body).await
+                    }),
+                )
+                .route(
+                    LIST_PEERS_PATH,
+                    get(|State(mut server): State<Server>| async move {
+                        server.handle_list_peers().await
+                    }),
+                )
+                .layer(DefaultBodyLimit::disable());
 
         let router = Router::new()
             .nest("/api", api_router)
-            .merge(SpaRouter::new("/ui", http_ui_resources));
+            .merge(SpaRouter::new("/ui", http_ui_resources))
+            .with_state(self);
 
         axum::Server::bind(&addr)
             .serve(router.into_make_service())
@@ -276,5 +281,42 @@ impl Server {
                 Ok(())
             }
         }
+    }
+
+    #[instrument(skip(self))]
+    async fn handle_list_peers(&mut self) -> Result<Json<ListPeersResponse>, StatusCode> {
+        let (result_sender, result_receiver) = oneshot::channel();
+
+        if let Err(err) = self
+            .command_sender
+            .send(Command::ListPeers { result_sender })
+            .await
+        {
+            error!(%err, "send list peers command failed");
+
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+
+        let peers = match result_receiver.await {
+            Err(err) => {
+                error!(%err, "receive result failed");
+
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+
+            Ok(peers) => {
+                info!(?peers, "list peers done");
+
+                peers
+                    .into_iter()
+                    .map(|peer| ListPeer {
+                        peer: peer.to_string(),
+                        connected_addrs: vec![],
+                    })
+                    .collect()
+            }
+        };
+
+        Ok(Json(ListPeersResponse { peers }))
     }
 }

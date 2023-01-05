@@ -90,6 +90,12 @@ impl<'a> CommandHandler<'a> {
 
                 info!(%filename, hash, "uploading file");
             }
+
+            Command::ListPeers { result_sender } => {
+                self.handle_list_peers_command(result_sender).await;
+
+                info!("handle list peers command done");
+            }
         }
     }
 
@@ -463,6 +469,15 @@ impl<'a> CommandHandler<'a> {
         });
 
         info!("start upload file task");
+    }
+
+    #[instrument(skip(self))]
+    async fn handle_list_peers_command(&mut self, result_sender: Sender<Vec<PeerId>>) {
+        let peers = self.peer_stores.keys().copied().collect();
+
+        info!(?peers, "collect connected peers done");
+
+        let _ = result_sender.send(peers);
     }
 }
 

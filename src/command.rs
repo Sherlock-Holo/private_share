@@ -24,6 +24,10 @@ pub enum Command<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + '
         file_stream: FileStream,
         result_sender: Sender<io::Result<()>>,
     },
+
+    ListPeers {
+        result_sender: Sender<Vec<PeerId>>,
+    },
 }
 
 impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Debug
@@ -44,6 +48,8 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Debu
             Command::UploadFile { filename, hash, .. } => {
                 debug_struct.field("filename", filename).field("hash", hash);
             }
+
+            Command::ListPeers { .. } => {}
         }
 
         debug_struct.finish()
