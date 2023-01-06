@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use bytes::{Bytes, BytesMut};
 use futures_channel::oneshot::Sender;
 use futures_util::{stream, Stream, StreamExt, TryStreamExt};
-use libp2p::PeerId;
+use libp2p::{Multiaddr, PeerId};
 use rand::distributions::{Alphanumeric, DistString};
 use sha2::digest::FixedOutput;
 use sha2::{Digest, Sha256};
@@ -31,6 +31,7 @@ pub struct CommandHandler<'a> {
     index_dir: &'a Path,
     store_dir: &'a Path,
     peer_stores: &'a HashMap<PeerId, PeerNodeStore>,
+    connected_peer: &'a HashMap<PeerId, HashSet<Multiaddr>>,
 }
 
 impl<'a> CommandHandler<'a> {
@@ -38,11 +39,13 @@ impl<'a> CommandHandler<'a> {
         index_dir: &'a Path,
         store_dir: &'a Path,
         peer_stores: &'a HashMap<PeerId, PeerNodeStore>,
+        connected_peer: &'a HashMap<PeerId, HashSet<Multiaddr>>,
     ) -> Self {
         Self {
             index_dir,
             store_dir,
             peer_stores,
+            connected_peer,
         }
     }
 
@@ -472,8 +475,15 @@ impl<'a> CommandHandler<'a> {
     }
 
     #[instrument(skip(self))]
-    async fn handle_list_peers_command(&mut self, result_sender: Sender<Vec<PeerId>>) {
-        let peers = self.peer_stores.keys().copied().collect();
+    async fn handle_list_peers_command(
+        &mut self,
+        result_sender: Sender<Vec<(PeerId, HashSet<Multiaddr>)>>,
+    ) {
+        let peers = self
+            .connected_peer
+            .iter()
+            .map(|(peer, addrs)| (*peer, addrs.clone()))
+            .collect();
 
         info!(?peers, "collect connected peers done");
 

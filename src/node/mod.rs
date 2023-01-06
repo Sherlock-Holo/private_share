@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 use std::{future, io};
@@ -57,6 +57,7 @@ pub struct Node<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 's
     refresh_store_ticker: Interval,
     sync_file_ticker: Interval,
     cache_files: FileCache,
+    connected_peer: HashMap<PeerId, HashSet<Multiaddr>>,
 }
 
 impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node<FileStream> {
@@ -86,6 +87,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
             refresh_store_ticker: time::interval(config.refresh_store_interval),
             sync_file_ticker: time::interval(config.sync_file_interval),
             cache_files: FileCache::new(),
+            connected_peer: Default::default(),
         })
     }
 
@@ -119,6 +121,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
                             .peer_addr_receiver(peer_addr_receiver)
                             .peer_addr_connecting(&mut self.peer_addr_connecting)
                             .cache_files(&mut self.cache_files)
+                            .connected_peer(&mut self.connected_peer)
                             .build()
                             .unwrap()
                             .handle_event(event).await?;
@@ -134,6 +137,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
                                 &self.index_dir,
                                 &self.store_dir,
                                 &self.peer_stores,
+                                &self.connected_peer
                             ).handle_command(cmd).await
                         }
 
@@ -181,6 +185,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
                             .peer_addr_receiver(peer_addr_receiver)
                             .peer_addr_connecting(&mut self.peer_addr_connecting)
                             .cache_files(&mut self.cache_files)
+                            .connected_peer(&mut self.connected_peer)
                             .build()
                             .unwrap()
                             .handle_event(event).await?;
@@ -196,6 +201,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
                                 &self.index_dir,
                                 &self.store_dir,
                                 &self.peer_stores,
+                                &self.connected_peer
                             ).handle_command(cmd).await
                         }
 

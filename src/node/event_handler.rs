@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
@@ -8,6 +8,7 @@ use bytes::{Bytes, BytesMut};
 use derive_builder::Builder;
 use futures_channel::oneshot::Sender;
 use itertools::Itertools;
+use libp2p::core::ConnectedPoint;
 use libp2p::gossipsub::GossipsubEvent;
 use libp2p::request_response::{
     OutboundFailure, RequestId, RequestResponseEvent, RequestResponseMessage,
@@ -40,6 +41,7 @@ pub struct EventHandler<'a> {
     peer_addr_receiver: &'a mut DelayQueue<Multiaddr>,
     peer_addr_connecting: &'a mut HashMap<PeerId, Multiaddr>,
     cache_files: &'a mut FileCache,
+    connected_peer: &'a mut HashMap<PeerId, HashSet<Multiaddr>>,
 }
 
 impl<'a> EventHandler<'a> {
@@ -85,12 +87,7 @@ impl<'a> EventHandler<'a> {
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
-                self.swarm
-                    .behaviour_mut()
-                    .gossip
-                    .add_explicit_peer(&peer_id);
-
-                self.peer_addr_connecting.remove(&peer_id);
+                self.handle_connection_established_event(peer_id, &endpoint);
 
                 if endpoint.is_dialer() {
                     info!(%peer_id, "dial peer done");
@@ -99,11 +96,10 @@ impl<'a> EventHandler<'a> {
                 }
             }
 
-            SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                self.swarm
-                    .behaviour_mut()
-                    .gossip
-                    .remove_explicit_peer(&peer_id);
+            SwarmEvent::ConnectionClosed {
+                peer_id, endpoint, ..
+            } => {
+                self.handle_connection_closed_event(peer_id, endpoint);
 
                 info!(%peer_id, "disconnect with peer");
             }
@@ -381,6 +377,32 @@ impl<'a> EventHandler<'a> {
         }
 
         Ok(())
+    }
+
+    #[instrument(skip(self))]
+    fn handle_connection_established_event(&mut self, peer_id: PeerId, endpoint: &ConnectedPoint) {
+        self.swarm
+            .behaviour_mut()
+            .gossip
+            .add_explicit_peer(&peer_id);
+
+        self.peer_addr_connecting.remove(&peer_id);
+        self.connected_peer
+            .entry(peer_id)
+            .or_insert_with(HashSet::new)
+            .insert(endpoint.get_remote_address().clone());
+    }
+
+    #[instrument(skip(self))]
+    fn handle_connection_closed_event(&mut self, peer_id: PeerId, endpoint: ConnectedPoint) {
+        self.swarm
+            .behaviour_mut()
+            .gossip
+            .remove_explicit_peer(&peer_id);
+
+        self.connected_peer.entry(peer_id).and_modify(|addrs| {
+            addrs.remove(endpoint.get_remote_address());
+        });
     }
 
     #[instrument(err, skip(self))]

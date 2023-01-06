@@ -310,8 +310,8 @@ impl Server {
                 peers
                     .into_iter()
                     .map(|peer| ListPeer {
-                        peer: peer.to_string(),
-                        connected_addrs: vec![],
+                        peer: peer.0.to_string(),
+                        connected_addrs: peer.1.into_iter().map(|addr| addr.to_string()).collect(),
                     })
                     .collect()
             }

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::io;
 use std::path::PathBuf;
@@ -5,7 +6,7 @@ use std::path::PathBuf;
 use bytes::Bytes;
 use futures_channel::oneshot::Sender;
 use futures_util::Stream;
-use libp2p::PeerId;
+use libp2p::{Multiaddr, PeerId};
 
 pub enum Command<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> {
     AddFile {
@@ -26,7 +27,7 @@ pub enum Command<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + '
     },
 
     ListPeers {
-        result_sender: Sender<Vec<PeerId>>,
+        result_sender: Sender<Vec<(PeerId, HashSet<Multiaddr>)>>,
     },
 }
 
