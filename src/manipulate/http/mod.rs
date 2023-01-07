@@ -12,6 +12,7 @@ use futures_channel::mpsc::Sender;
 use futures_channel::{mpsc, oneshot};
 use futures_util::{SinkExt, Stream, StreamExt, TryStreamExt};
 use http::StatusCode;
+use tower_http::compression::CompressionLayer;
 use tracing::{error, info, instrument};
 
 use crate::command::Command;
@@ -69,7 +70,10 @@ impl Server {
 
         let router = Router::new()
             .nest("/api", api_router)
-            .merge(SpaRouter::new("/ui", http_ui_resources))
+            .merge(
+                Router::from(SpaRouter::new("/ui", http_ui_resources))
+                    .layer(CompressionLayer::new().gzip(true).br(true)),
+            )
             .with_state(self);
 
         axum::Server::bind(&addr)
