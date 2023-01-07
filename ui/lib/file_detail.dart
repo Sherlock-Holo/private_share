@@ -7,31 +7,31 @@ class FileList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView.separated(
+    return ListView.builder(
       itemCount: files.length,
       itemBuilder: (context, index) {
         var file = files[index];
 
         return Card(
-          child: ListTile(
+          child: ExpansionTile(
             leading: const Icon(Icons.insert_drive_file_outlined),
             title: SelectableText(file.filename),
             trailing: Icon(file.downloaded
                 ? Icons.download_done
                 : Icons.download_outlined),
-            subtitle: Row(
-              children: [
-                const Text(
-                  "Hash: ",
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                Flexible(child: SelectableText(file.hash))
-              ],
-            ),
+            children: [
+              const Divider(
+                thickness: 1.0,
+                height: 1.0,
+              ),
+              ListTile(leading: const Text("Size:"), title: Text(file.size)),
+              ListTile(
+                  leading: const Text("Hash:"),
+                  title: SelectableText(file.hash))
+            ],
           ),
         );
       },
-      separatorBuilder: (BuildContext context, int index) => const Divider(),
     );
   }
 }
