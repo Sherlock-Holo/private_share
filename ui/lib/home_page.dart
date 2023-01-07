@@ -168,8 +168,18 @@ class _HomePageState extends State<HomePage> {
                       style:
                           TextStyle(fontWeight: FontWeight.bold, fontSize: 30),
                     ),
-                    trailing: IconButton(
-                        onPressed: () {}, icon: const Icon(Icons.add)),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                            onPressed: () {}, icon: const Icon(Icons.add)),
+                        IconButton(
+                            onPressed: () {
+                              setState(() {});
+                            },
+                            icon: const Icon(Icons.refresh)),
+                      ],
+                    ),
                   ),
                   Expanded(child: _createPeerListWidget())
                 ],
