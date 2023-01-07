@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:mime/mime.dart';
 
 class FileList extends StatelessWidget {
   final List<FileDetail> files;
@@ -12,9 +13,38 @@ class FileList extends StatelessWidget {
       itemBuilder: (context, index) {
         var file = files[index];
 
+        Icon icon;
+        final mimeType = lookupMimeType(file.filename)?.split("/");
+        if (mimeType == null || mimeType.length != 2) {
+          icon = const Icon(Icons.insert_drive_file_outlined);
+        } else {
+          final fileType = mimeType.first;
+          switch (fileType) {
+            case "audio":
+              {
+                icon = const Icon(Icons.audio_file_rounded);
+              }
+              break;
+            case "image":
+              {
+                icon = const Icon(Icons.image_rounded);
+              }
+              break;
+            case "video":
+              {
+                icon = const Icon(Icons.video_file_rounded);
+              }
+              break;
+            default:
+              {
+                icon = const Icon(Icons.insert_drive_file_outlined);
+              }
+          }
+        }
+
         return Card(
           child: ExpansionTile(
-            leading: const Icon(Icons.insert_drive_file_outlined),
+            leading: icon,
             title: SelectableText(file.filename),
             trailing: Icon(file.downloaded
                 ? Icons.download_done
