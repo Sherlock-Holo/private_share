@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use bytes::{Bytes, BytesMut};
 use futures_channel::oneshot::Sender;
 use futures_util::{stream, Stream, StreamExt, TryStreamExt};
+use itertools::Itertools;
 use libp2p::{Multiaddr, PeerId};
 use rand::distributions::{Alphanumeric, DistString};
 use sha2::digest::FixedOutput;
@@ -393,6 +394,7 @@ impl<'a> CommandHandler<'a> {
 
                 list_file_detail
             })
+            .sorted_by(|a, b| a.filename.cmp(&b.filename))
             .collect::<Vec<_>>();
 
         info!(?list_file_details, "collect local and peer files done");
