@@ -34,3 +34,14 @@ pub struct ListPeer {
     pub peer: String,
     pub connected_addrs: Vec<String>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct GetBandwidthQuery {
+    pub interval: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetBandWidthResponse {
+    pub inbound: u64,
+    pub outbound: u64,
+}

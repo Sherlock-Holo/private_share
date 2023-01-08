@@ -11,6 +11,7 @@ use bytes::{Bytes, BytesMut};
 use futures_channel::oneshot::Sender;
 use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use itertools::Itertools;
+use libp2p::bandwidth::BandwidthSinks;
 use libp2p::{Multiaddr, PeerId};
 use rand::distributions::{Alphanumeric, DistString};
 use sha2::digest::FixedOutput;
@@ -33,6 +34,7 @@ pub struct CommandHandler<'a> {
     store_dir: &'a Path,
     peer_stores: &'a HashMap<PeerId, PeerNodeStore>,
     connected_peer: &'a HashMap<PeerId, HashSet<Multiaddr>>,
+    bandwidth_sinks: &'a BandwidthSinks,
 }
 
 impl<'a> CommandHandler<'a> {
@@ -41,12 +43,14 @@ impl<'a> CommandHandler<'a> {
         store_dir: &'a Path,
         peer_stores: &'a HashMap<PeerId, PeerNodeStore>,
         connected_peer: &'a HashMap<PeerId, HashSet<Multiaddr>>,
+        bandwidth_sinks: &'a BandwidthSinks,
     ) -> Self {
         Self {
             index_dir,
             store_dir,
             peer_stores,
             connected_peer,
+            bandwidth_sinks,
         }
     }
 
@@ -96,9 +100,14 @@ impl<'a> CommandHandler<'a> {
             }
 
             Command::ListPeers { result_sender } => {
-                self.handle_list_peers_command(result_sender).await;
+                self.handle_list_peers_command(result_sender);
 
                 info!("handle list peers command done");
+            }
+            Command::GetBandwidth { result_sender } => {
+                self.handle_get_bandwidth_command(result_sender);
+
+                info!("handle get bandwidth command done");
             }
         }
     }
@@ -477,7 +486,7 @@ impl<'a> CommandHandler<'a> {
     }
 
     #[instrument(skip(self))]
-    async fn handle_list_peers_command(
+    fn handle_list_peers_command(
         &mut self,
         result_sender: Sender<Vec<(PeerId, HashSet<Multiaddr>)>>,
     ) {
@@ -490,6 +499,16 @@ impl<'a> CommandHandler<'a> {
         info!(?peers, "collect connected peers done");
 
         let _ = result_sender.send(peers);
+    }
+
+    #[instrument(skip(self))]
+    fn handle_get_bandwidth_command(&mut self, result_sender: Sender<(u64, u64)>) {
+        let inbound = self.bandwidth_sinks.total_inbound();
+        let outbound = self.bandwidth_sinks.total_outbound();
+
+        info!(inbound, outbound, "get inbound and outbound done");
+
+        let _ = result_sender.send((inbound, outbound));
     }
 }
 

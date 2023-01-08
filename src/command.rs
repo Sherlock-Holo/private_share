@@ -29,6 +29,10 @@ pub enum Command<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + '
     ListPeers {
         result_sender: Sender<Vec<(PeerId, HashSet<Multiaddr>)>>,
     },
+
+    GetBandwidth {
+        result_sender: Sender<(u64, u64)>,
+    },
 }
 
 impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Debug
@@ -50,7 +54,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Debu
                 debug_struct.field("filename", filename).field("hash", hash);
             }
 
-            Command::ListPeers { .. } => {}
+            Command::ListPeers { .. } | Command::GetBandwidth { .. } => {}
         }
 
         debug_struct.finish()

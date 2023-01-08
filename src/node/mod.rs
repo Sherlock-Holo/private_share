@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use std::{future, io};
 
@@ -7,6 +8,7 @@ use bytes::Bytes;
 use futures_channel::mpsc::Receiver;
 use futures_channel::oneshot::Sender;
 use futures_util::{Stream, StreamExt};
+use libp2p::bandwidth::{BandwidthLogging, BandwidthSinks};
 use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::core::transport::Boxed;
 use libp2p::core::upgrade::Version;
@@ -58,6 +60,7 @@ pub struct Node<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 's
     sync_file_ticker: Interval,
     cache_files: FileCache,
     connected_peer: HashMap<PeerId, HashSet<Multiaddr>>,
+    bandwidth_sinks: Arc<BandwidthSinks>,
 }
 
 impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node<FileStream> {
@@ -70,7 +73,8 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
 
         info!("local node peer id {}", peer_id);
 
-        let transport = create_transport(config.key.clone(), config.handshake_key)?;
+        let (transport, bandwidth_sinks) =
+            create_transport(config.key.clone(), config.handshake_key)?;
         let behaviour = Behaviour::new(config.key)?;
 
         let swarm = Swarm::with_tokio_executor(transport, behaviour, peer_id);
@@ -88,6 +92,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
             sync_file_ticker: time::interval(config.sync_file_interval),
             cache_files: FileCache::new(),
             connected_peer: Default::default(),
+            bandwidth_sinks,
         })
     }
 
@@ -137,7 +142,8 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
                                 &self.index_dir,
                                 &self.store_dir,
                                 &self.peer_stores,
-                                &self.connected_peer
+                                &self.connected_peer,
+                                &self.bandwidth_sinks
                             ).handle_command(cmd).await
                         }
 
@@ -201,7 +207,8 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
                                 &self.index_dir,
                                 &self.store_dir,
                                 &self.peer_stores,
-                                &self.connected_peer
+                                &self.connected_peer,
+                                &self.bandwidth_sinks
                             ).handle_command(cmd).await
                         }
 
@@ -264,7 +271,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
 pub fn create_transport(
     keypair: Keypair,
     handshake_key: PreSharedKey,
-) -> io::Result<Boxed<(PeerId, StreamMuxerBox)>> {
+) -> io::Result<(Boxed<(PeerId, StreamMuxerBox)>, Arc<BandwidthSinks>)> {
     let tcp_transport =
         TokioDnsConfig::system(tcp::tokio::Transport::new(tcp::Config::new().nodelay(true)))?
             .and_then(move |conn, connected_point| async move {
@@ -278,16 +285,20 @@ pub fn create_transport(
                 Ok::<_, PnetError>(conn)
             });
     let transport = websocket::WsConfig::new(tcp_transport);
+    let (transport, bandwidth_sinks) = BandwidthLogging::new(transport);
 
     let mut yamux_config = YamuxConfig::default();
     yamux_config.set_max_buffer_size(MAX_CHUNK_SIZE * 2);
     yamux_config.set_receive_window_size((MAX_CHUNK_SIZE * 2) as _);
 
-    Ok(transport
-        .upgrade(Version::V1)
-        .authenticate(noise::NoiseAuthenticated::xx(&keypair).unwrap())
-        .multiplex(yamux_config)
-        .boxed())
+    Ok((
+        transport
+            .upgrade(Version::V1)
+            .authenticate(noise::NoiseAuthenticated::xx(&keypair).unwrap())
+            .multiplex(yamux_config)
+            .boxed(),
+        bandwidth_sinks,
+    ))
 }
 
 #[derive(Debug, Default)]

@@ -1,8 +1,13 @@
+use std::borrow::Cow;
+use std::error::Error;
 use std::io;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+use std::time::Duration;
 
-use axum::extract::{DefaultBodyLimit, Multipart, Query, State};
+use axum::body::BoxBody;
+use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
+use axum::extract::{DefaultBodyLimit, Multipart, Query, State, WebSocketUpgrade};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::routing::SpaRouter;
@@ -11,13 +16,17 @@ use bytes::Bytes;
 use futures_channel::mpsc::Sender;
 use futures_channel::{mpsc, oneshot};
 use futures_util::{SinkExt, Stream, StreamExt, TryStreamExt};
-use http::StatusCode;
+use http::{Response, StatusCode};
+use tap::{Tap, TapFallible};
+use tokio::{select, time};
+use tokio_stream::wrappers::IntervalStream;
 use tower_http::compression::CompressionLayer;
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 
 use crate::command::Command;
 use crate::manipulate::http::response::{
-    AddFileRequest, ListFile, ListFilesQuery, ListPeer, ListPeersResponse, ListResponse,
+    AddFileRequest, GetBandWidthResponse, GetBandwidthQuery, ListFile, ListFilesQuery, ListPeer,
+    ListPeersResponse, ListResponse,
 };
 
 mod response;
@@ -26,6 +35,7 @@ const LIST_FILES_PATH: &str = "/list_files";
 const ADD_FILE_PATH: &str = "/add_file";
 const UPLOAD_FILE_PATH: &str = "/upload_file";
 const LIST_PEERS_PATH: &str = "/list_peers";
+const GET_BANDWIDTH_PATH: &str = "/get_bandwidth";
 
 type UploadFileReceiver = impl Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static;
 
@@ -66,13 +76,19 @@ impl Server {
                         server.handle_list_peers().await
                     }),
                 )
+                .route(
+                    GET_BANDWIDTH_PATH,
+                    get(|State(mut server): State<Server>, query, ws| async move {
+                        server.handle_get_bandwidth(query, ws).await
+                    }),
+                )
                 .layer(DefaultBodyLimit::disable());
 
         let router = Router::new()
             .nest("/api", api_router)
             .merge(
                 Router::from(SpaRouter::new("/ui", http_ui_resources))
-                    .layer(CompressionLayer::new().gzip(true).br(true)),
+                    .layer(CompressionLayer::new().br(true)),
             )
             .with_state(self);
 
@@ -322,5 +338,149 @@ impl Server {
         };
 
         Ok(Json(ListPeersResponse { peers }))
+    }
+
+    #[instrument(skip(self))]
+    async fn handle_get_bandwidth(
+        &mut self,
+        Query(get_bandwidth_query): Query<GetBandwidthQuery>,
+        ws: WebSocketUpgrade,
+    ) -> Response<BoxBody> {
+        let interval = get_bandwidth_query
+            .interval
+            .map(|interval| Duration::from_millis(interval as _))
+            .unwrap_or_else(|| Duration::from_secs(1));
+        let mut this = self.clone();
+
+        ws.on_upgrade(move |mut websocket| async move {
+            let mut interval_stream = IntervalStream::new(time::interval(interval));
+
+            loop {
+                select! {
+                    _ = interval_stream.next() => {
+                        this.send_bandwidth(&mut websocket).await;
+                    }
+
+                    message = websocket.recv() => {
+                        if let Some(true) = handle_websocket_in_message(&mut websocket, message).await {
+                            let _ = websocket
+                                .close()
+                                .await
+                                .tap_err(|err| error!(%err, "graceful close websocket failed"))
+                                .tap(|_| info!("graceful close websocket done"));
+
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    async fn send_bandwidth(&mut self, websocket: &mut WebSocket) {
+        let (result_sender, result_receiver) = oneshot::channel();
+
+        if let Err(err) = self
+            .command_sender
+            .send(Command::GetBandwidth { result_sender })
+            .await
+        {
+            error!(%err, "send get bandwidth command failed");
+
+            websocket_close_with_err(websocket, err).await;
+
+            return;
+        }
+
+        info!("send get bandwidth command done");
+
+        let (inbound, outbound) = match result_receiver.await {
+            Err(err) => {
+                error!(%err, "receive result failed");
+
+                websocket_close_with_err(websocket, err).await;
+
+                return;
+            }
+
+            Ok(bandwidth) => bandwidth,
+        };
+
+        info!(inbound, outbound, "get bandwidth done");
+
+        let response = GetBandWidthResponse { inbound, outbound };
+        let response = match serde_json::to_string(&response) {
+            Err(err) => {
+                error!(%err, ?response, "marshal response failed");
+
+                websocket_close_with_err(websocket, err).await;
+
+                return;
+            }
+
+            Ok(resp) => resp,
+        };
+
+        info!(%response, "marshal response done");
+
+        if let Err(err) = websocket.send(Message::Text(response)).await {
+            error!(%err, inbound, outbound, "send bandwidth failed");
+        }
+    }
+}
+
+#[instrument]
+async fn handle_websocket_in_message(
+    websocket: &mut WebSocket,
+    message: Option<Result<Message, axum::Error>>,
+) -> Option<bool> {
+    let message = match message.transpose() {
+        Err(err) => {
+            error!(%err, "receive websocket message failed");
+
+            websocket_close_with_err(websocket, err).await;
+
+            return None;
+        }
+
+        Ok(None) => {
+            info!("websocket is closed");
+
+            return Some(true);
+        }
+
+        Ok(Some(message)) => message,
+    };
+
+    match message {
+        Message::Text(_) | Message::Binary(_) => {
+            warn!(?message, "unexpected websocket message");
+
+            None
+        }
+        Message::Ping(_) | Message::Pong(_) => {
+            info!(?message, "receive websocket ping or pong message");
+
+            None
+        }
+
+        Message::Close(reason) => {
+            info!(?reason, "websocket is closed");
+
+            Some(true)
+        }
+    }
+}
+
+#[instrument]
+async fn websocket_close_with_err<E: Error>(websocket: &mut WebSocket, err: E) {
+    if let Err(err) = websocket
+        .send(Message::Close(Some(CloseFrame {
+            code: close_code::ERROR,
+            reason: Cow::from(err.to_string()),
+        })))
+        .await
+    {
+        error!(%err, "send close frame failed");
     }
 }
