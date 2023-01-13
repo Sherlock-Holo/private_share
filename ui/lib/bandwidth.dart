@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:ui/bandwidth_response.dart';
@@ -15,6 +16,8 @@ class _BandwidthState extends State<Bandwidth> {
   late final WebSocketChannel _webSocketChannel;
   int inbound = 0;
   int outbound = 0;
+
+  static const double _minWidth = 90;
 
   @override
   void initState() {
@@ -57,15 +60,28 @@ class _BandwidthState extends State<Bandwidth> {
           inbound = resp.inbound;
           outbound = resp.outbound;
 
-          return Column(
+          return Wrap(
+            spacing: 8,
             children: [
-              ListTile(
-                leading: const Icon(Icons.download_rounded),
-                title: Text("$inboundSpeed"),
+              Chip(
+                avatar: const CircleAvatar(
+                  child: Icon(Icons.download_rounded),
+                ),
+                label: Container(
+                    alignment: Alignment.centerRight,
+                    constraints: const BoxConstraints(
+                        minWidth: _minWidth, maxWidth: _minWidth),
+                    child: Text(_formatBytes(inboundSpeed, 2))),
               ),
-              ListTile(
-                leading: const Icon(Icons.upload_rounded),
-                title: Text("$outboundSpeed"),
+              Chip(
+                avatar: const CircleAvatar(
+                  child: Icon(Icons.upload_rounded),
+                ),
+                label: Container(
+                    alignment: Alignment.centerRight,
+                    constraints: const BoxConstraints(
+                        minWidth: _minWidth, maxWidth: _minWidth),
+                    child: Text(_formatBytes(outboundSpeed, 2))),
               ),
             ],
           );
@@ -74,39 +90,85 @@ class _BandwidthState extends State<Bandwidth> {
         if (snapshot.hasError) {
           final err = snapshot.error!;
 
-          return Column(
+          return Wrap(
+            spacing: 8,
             children: [
-              ListTile(
-                leading: const Icon(Icons.download_rounded),
-                title: Text(
-                  "$err",
-                  style: const TextStyle(color: Colors.red),
+              Chip(
+                avatar: const CircleAvatar(
+                  child: Icon(Icons.download_rounded),
                 ),
+                label: Container(
+                    alignment: Alignment.centerRight,
+                    constraints: const BoxConstraints(
+                        minWidth: _minWidth, maxWidth: _minWidth),
+                    child: Text(
+                      "$err",
+                      style: const TextStyle(color: Colors.red),
+                    )),
               ),
-              ListTile(
-                leading: const Icon(Icons.upload_rounded),
-                title: Text(
-                  "$err",
-                  style: const TextStyle(color: Colors.red),
-                ),
-              ),
+              Chip(
+                  avatar: const CircleAvatar(
+                    child: Icon(Icons.upload_rounded),
+                  ),
+                  label: Container(
+                      alignment: Alignment.centerRight,
+                      constraints: const BoxConstraints(
+                          minWidth: _minWidth, maxWidth: _minWidth),
+                      child: Text(
+                        "$err",
+                        style: const TextStyle(color: Colors.red),
+                      ))),
             ],
           );
         }
 
-        return Column(
-          children: const [
-            ListTile(
-              leading: Icon(Icons.download_rounded),
-              title: Text("0"),
-            ),
-            ListTile(
-              leading: Icon(Icons.upload_rounded),
-              title: Text("0"),
-            ),
+        return Wrap(
+          spacing: 8,
+          children: [
+            Chip(
+                avatar: const CircleAvatar(
+                  child: Icon(Icons.download_rounded),
+                ),
+                label: Container(
+                    alignment: Alignment.centerRight,
+                    constraints: const BoxConstraints(
+                        minWidth: _minWidth, maxWidth: _minWidth),
+                    child: const Text(
+                      "0",
+                      style: TextStyle(color: Colors.red),
+                    ))),
+            Chip(
+                avatar: const CircleAvatar(
+                  child: Icon(Icons.upload_rounded),
+                ),
+                label: Container(
+                    alignment: Alignment.centerRight,
+                    constraints: const BoxConstraints(
+                        minWidth: _minWidth, maxWidth: _minWidth),
+                    child: const Text(
+                      "0",
+                      style: TextStyle(color: Colors.red),
+                    ))),
           ],
         );
       },
     );
+  }
+
+  static String _formatBytes(int bytes, int decimals) {
+    if (bytes <= 0) return "0B/s";
+    const suffixes = [
+      "B",
+      "KiB",
+      "MiB",
+      "GiB",
+      "TiB",
+      "PiB",
+      "EiB",
+      "ZiB",
+      "YiB"
+    ];
+    final i = (log(bytes) / log(1024)).floor();
+    return "${(bytes / pow(1024, i)).toStringAsFixed(decimals)}${suffixes[i]}/s";
   }
 }

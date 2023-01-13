@@ -17,11 +17,9 @@ class HomePage extends StatelessWidget {
       body: Center(
           child: Column(
         children: [
-          Row(
-            children: const [
-              Expanded(flex: 7, child: Spacer()),
-              Expanded(flex: 3, child: Bandwidth())
-            ],
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Bandwidth(),
           ),
           Expanded(
               child: Row(
