@@ -47,6 +47,8 @@ mod refresh_store_handler;
 
 const FILE_CACHE_TIMEOUT: Duration = Duration::from_secs(30);
 
+type BoxedTransport = Boxed<(PeerId, StreamMuxerBox)>;
+
 pub struct Node<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> {
     index_dir: PathBuf,
     store_dir: PathBuf,
@@ -271,7 +273,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
 pub fn create_transport(
     keypair: Keypair,
     handshake_key: PreSharedKey,
-) -> io::Result<(Boxed<(PeerId, StreamMuxerBox)>, Arc<BandwidthSinks>)> {
+) -> io::Result<(BoxedTransport, Arc<BandwidthSinks>)> {
     let tcp_transport =
         TokioDnsConfig::system(tcp::tokio::Transport::new(tcp::Config::new().nodelay(true)))?
             .and_then(move |conn, connected_point| async move {
