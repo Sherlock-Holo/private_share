@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:clipboard/clipboard.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -7,6 +8,8 @@ import 'package:http_parser/http_parser.dart';
 import 'package:mime/mime.dart';
 import 'package:ui/list_file_response.dart';
 import 'package:ui/util.dart';
+import 'package:ui/video.dart';
+import 'package:universal_html/html.dart';
 
 class FileList extends StatefulWidget {
   const FileList({super.key});
@@ -142,8 +145,10 @@ class _FileListState extends State<FileList> {
     return ListView.builder(
       itemCount: files.length,
       itemBuilder: (context, index) {
-        var file = files[index];
+        final file = files[index];
+        final url = Util.getUri("/api/get_file/${file.filename}").toString();
 
+        List<Widget>? fileDetailButtons;
         Icon icon;
         final mimeType = lookupMimeType(file.filename)?.split("/");
         if (mimeType == null || mimeType.length != 2) {
@@ -159,11 +164,61 @@ class _FileListState extends State<FileList> {
             case "image":
               {
                 icon = const Icon(Icons.image_rounded);
+                fileDetailButtons = [
+                  TextButton(
+                      onPressed: () async {
+                        await showDialog(
+                          context: context,
+                          barrierDismissible: true,
+                          builder: (context) {
+                            return Center(
+                              child: Stack(
+                                children: [
+                                  Image(image: NetworkImage(url)),
+                                  const Positioned(
+                                      right: -2, top: -9, child: CloseButton())
+                                ],
+                              ),
+                            );
+                          },
+                        );
+                      },
+                      child: Column(
+                        children: const [
+                          Icon(Icons.remove_red_eye_rounded),
+                          Padding(
+                            padding: EdgeInsets.symmetric(vertical: 2.0),
+                          ),
+                          Text("View")
+                        ],
+                      ))
+                ];
               }
               break;
             case "video":
               {
                 icon = const Icon(Icons.video_file_rounded);
+                fileDetailButtons = [
+                  TextButton(
+                      onPressed: () async {
+                        await showDialog(
+                          context: context,
+                          barrierDismissible: true,
+                          builder: (context) {
+                            return Video(url: url, filename: file.filename);
+                          },
+                        );
+                      },
+                      child: Column(
+                        children: const [
+                          Icon(Icons.play_arrow_rounded),
+                          Padding(
+                            padding: EdgeInsets.symmetric(vertical: 2.0),
+                          ),
+                          Text("Play")
+                        ],
+                      ))
+                ];
               }
               break;
             default:
@@ -172,6 +227,45 @@ class _FileListState extends State<FileList> {
               }
           }
         }
+
+        fileDetailButtons ??= fileDetailButtons = [
+          TextButton(
+              onPressed: () {
+                final anchorElement = AnchorElement(href: url)..download = url;
+                anchorElement.click();
+              },
+              child: Column(
+                children: const [
+                  Icon(Icons.download_rounded),
+                  Padding(
+                    padding: EdgeInsets.symmetric(vertical: 2.0),
+                  ),
+                  Text("Download")
+                ],
+              ))
+        ];
+
+        final buttonBar = ButtonBar(
+          children: [
+            TextButton(
+                onPressed: () {
+                  FlutterClipboard.copy(url).then((value) => {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text("Copied")))
+                      });
+                },
+                child: Column(
+                  children: const [
+                    Icon(Icons.link_rounded),
+                    Padding(
+                      padding: EdgeInsets.symmetric(vertical: 2.0),
+                    ),
+                    Text("Link")
+                  ],
+                ))
+          ],
+        );
+        buttonBar.children.addAll(fileDetailButtons);
 
         return Card(
           child: ExpansionTile(
@@ -188,7 +282,8 @@ class _FileListState extends State<FileList> {
               ListTile(leading: const Text("Size:"), title: Text(file.size)),
               ListTile(
                   leading: const Text("Hash:"),
-                  title: SelectableText(file.hash))
+                  title: SelectableText(file.hash)),
+              buttonBar,
             ],
           ),
         );
