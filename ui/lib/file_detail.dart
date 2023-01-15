@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:mime/mime.dart';
 import 'package:ui/list_file_response.dart';
+import 'package:ui/util.dart';
 
 class FileList extends StatefulWidget {
   const FileList({super.key});
@@ -22,13 +23,7 @@ class _FileListState extends State<FileList> {
       return 0;
     }
 
-    Uri url;
-    if (Uri.base.scheme == "http") {
-      url = Uri.http(Uri.base.authority, "/api/upload_file");
-    } else {
-      url = Uri.https(Uri.base.authority, "/api/upload_file");
-    }
-
+    final url = Util.getUri("/api/upload_file");
     final file = result.files.single;
     final mimeType = lookupMimeType(file.name);
     final contentType = mimeType != null ? MediaType.parse(mimeType) : null;

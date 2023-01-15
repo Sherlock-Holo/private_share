@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:ui/list_peers_response.dart';
+import 'package:ui/util.dart';
 
 class PeerInfo {
   final String peerId;
@@ -33,12 +34,16 @@ class _PeerListState extends State<PeerList> {
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  IconButton(onPressed: () {}, icon: const Icon(Icons.add)),
+                  IconButton(
+                      onPressed: () async {
+                        await _showAddPeerDialog();
+                      },
+                      icon: const Icon(Icons.add_rounded)),
                   IconButton(
                       onPressed: () {
                         setState(() {});
                       },
-                      icon: const Icon(Icons.refresh)),
+                      icon: const Icon(Icons.refresh_rounded)),
                 ],
               ),
             ),
@@ -47,14 +52,84 @@ class _PeerListState extends State<PeerList> {
         ));
   }
 
-  Future<List<PeerInfo>> _getPeerList() async {
-    Uri url;
-    if (Uri.base.scheme == "http") {
-      url = Uri.http(Uri.base.authority, "/api/list_peers");
-    } else {
-      url = Uri.https(Uri.base.authority, "/api/list_peers");
-    }
+  Future<String?> _showAddPeerDialog() async {
+    return showDialog(
+      context: context,
+      builder: (context) {
+        String? peerAddr;
+        final TextEditingController addPeersController =
+            TextEditingController();
 
+        return AlertDialog(
+          title: const Text("Add Peer"),
+          content: TextField(
+            autofocus: true,
+            decoration: const InputDecoration(
+                labelText: "Peer",
+                hintText: "/ip4/{ip_addr}/tcp/{tcp_port}/ws/p2p/{peer_id}"),
+            onChanged: (value) {
+              peerAddr = value;
+            },
+            controller: addPeersController,
+          ),
+          actions: [
+            TextButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+                child: const Text("Cancel")),
+            ValueListenableBuilder(
+              valueListenable: addPeersController,
+              builder: (context, value, child) {
+                return TextButton(
+                    onPressed: value.text.isNotEmpty
+                        ? () {
+                            _addPeer(peerAddr!).then((value) {
+                              if (value == 200) {
+                                ScaffoldMessenger.of(context)
+                                    .showSnackBar(const SnackBar(
+                                        content: Text(
+                                  "Add peer done",
+                                )));
+
+                                setState(() {});
+                              } else {
+                                ScaffoldMessenger.of(context)
+                                    .showSnackBar(SnackBar(
+                                        content: Text(
+                                  "Add peer failed: $value",
+                                  style: const TextStyle(color: Colors.red),
+                                )));
+                              }
+                            });
+
+                            Navigator.of(context).pop();
+                          }
+                        : null,
+                    child: const Text("OK"));
+              },
+            )
+          ],
+        );
+      },
+    );
+  }
+
+  Future<int> _addPeer(String peerAddr) async {
+    final url = Util.getUri("/api/add_peers");
+    final resp = await http.post(url,
+        headers: <String, String>{
+          'Content-Type': 'application/json; charset=UTF-8',
+        },
+        body: jsonEncode(<String, List<String>>{
+          "peers": [peerAddr]
+        }));
+
+    return resp.statusCode;
+  }
+
+  Future<List<PeerInfo>> _getPeerList() async {
+    final url = Util.getUri("/api/list_peers");
     final resp = await http.get(url);
     if (resp.statusCode != 200) {
       throw Exception("status code ${resp.statusCode} != 200");

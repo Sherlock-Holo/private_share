@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:ui/bandwidth_response.dart';
+import 'package:ui/util.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 class Bandwidth extends StatefulWidget {
@@ -23,14 +24,8 @@ class _BandwidthState extends State<Bandwidth> {
   void initState() {
     super.initState();
 
-    final Uri u;
-    final query = {"interval": "1000"};
-    if (Uri.base.scheme == "http") {
-      u = Uri.http(Uri.base.authority, "/api/get_bandwidth", query);
-    } else {
-      u = Uri.https(Uri.base.authority, "/api/get_bandwidth", query);
-    }
-    final url = u.toString().replaceFirst("http", "ws");
+    final url =
+        Util.getWsUri("/api/get_bandwidth", query: {"interval": "1000"});
 
     _webSocketChannel = WebSocketChannel.connect(Uri.parse(url));
   }
