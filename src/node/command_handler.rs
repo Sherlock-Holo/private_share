@@ -27,6 +27,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio_util::time::DelayQueue;
 use tracing::{error, info, instrument, warn};
 
+use crate::command;
 use crate::command::{Command, ListFileDetail};
 use crate::config::ConfigManager;
 use crate::node::behaviour::Behaviour;
@@ -50,12 +51,13 @@ pub struct CommandHandler<'a> {
 
 impl<'a> CommandHandler<'a> {
     #[instrument(skip(self))]
-    pub async fn handle_command<
-        FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static,
-    >(
+    pub async fn handle_command<FileStream, FileGetter>(
         mut self,
-        cmd: Command<FileStream>,
-    ) {
+        cmd: Command<FileStream, FileGetter>,
+    ) where
+        FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static,
+        FileGetter: command::FileGetter + Send + 'static,
+    {
         match cmd {
             Command::AddFile {
                 file_path,
@@ -122,6 +124,17 @@ impl<'a> CommandHandler<'a> {
                 self.handle_remove_peers_command(peers, result_sender).await;
 
                 info!("handle remove peers command done");
+            }
+
+            Command::GetFile {
+                filename,
+                file_getter,
+                result_sender,
+            } => {
+                self.handle_get_file_command(filename, file_getter, result_sender)
+                    .await;
+
+                info!("handle get file command done");
             }
         }
     }
@@ -426,15 +439,15 @@ impl<'a> CommandHandler<'a> {
     }
 
     #[instrument(skip(self, file_stream))]
-    async fn handle_upload_file_command<
-        FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static,
-    >(
+    async fn handle_upload_file_command<FileStream>(
         &mut self,
         filename: &str,
         hash: Option<&str>,
         file_stream: FileStream,
         result_sender: Sender<io::Result<()>>,
-    ) {
+    ) where
+        FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static,
+    {
         let store_path = self.store_dir.join(filename);
         if let Some(hash) = hash {
             info!("command has hash");
@@ -638,6 +651,41 @@ impl<'a> CommandHandler<'a> {
             .map(|_| ());
 
         let _ = result_sender.send(result);
+    }
+
+    #[instrument(skip(self, file_getter, result_sender))]
+    async fn handle_get_file_command<FileGetter>(
+        &mut self,
+        filename: String,
+        file_getter: FileGetter,
+        result_sender: Sender<io::Result<Option<FileGetter::FileContent>>>,
+    ) where
+        FileGetter: command::FileGetter + Send + 'static,
+    {
+        let store_dir = self.store_dir;
+        let store_filenames = match collect_filenames(store_dir).await {
+            Err(err) => {
+                let _ = result_sender.send(Err(err));
+
+                return;
+            }
+
+            Ok(filenames) => filenames,
+        };
+
+        let filename = OsString::from(filename);
+        if !store_filenames.contains(&filename) {
+            error!(?filename, "file not found");
+
+            let _ = result_sender.send(Ok(None));
+
+            return;
+        }
+
+        info!(?filename, "check file done and file exists");
+
+        let result = file_getter.get_file(&store_dir.join(filename)).await;
+        let _ = result_sender.send(result.map(Some));
     }
 }
 

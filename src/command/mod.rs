@@ -4,11 +4,18 @@ use std::io;
 use std::path::PathBuf;
 
 use bytes::Bytes;
+pub use file::FileGetter;
 use futures_channel::oneshot::Sender;
 use futures_util::Stream;
 use libp2p::{Multiaddr, PeerId};
 
-pub enum Command<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> {
+mod file;
+
+pub enum Command<FileStream, FileGetter>
+where
+    FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static,
+    FileGetter: file::FileGetter + Send + 'static,
+{
     AddFile {
         file_path: PathBuf,
         result_sender: Sender<io::Result<()>>,
@@ -43,10 +50,18 @@ pub enum Command<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + '
         peers: Vec<Multiaddr>,
         result_sender: Sender<io::Result<()>>,
     },
+
+    GetFile {
+        filename: String,
+        file_getter: FileGetter,
+        result_sender: Sender<io::Result<Option<FileGetter::FileContent>>>,
+    },
 }
 
-impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Debug
-    for Command<FileStream>
+impl<FileStream, File> Debug for Command<FileStream, File>
+where
+    FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static,
+    File: file::FileGetter + Send + 'static,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut debug_struct = match self {
@@ -90,6 +105,14 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Debu
                 let mut debug_struct = f.debug_struct("Command::RemovePeers");
 
                 debug_struct.field("peers", peers);
+
+                debug_struct
+            }
+
+            Command::GetFile { filename, .. } => {
+                let mut debug_struct = f.debug_struct("Command::GetFile");
+
+                debug_struct.field("filename", filename);
 
                 debug_struct
             }

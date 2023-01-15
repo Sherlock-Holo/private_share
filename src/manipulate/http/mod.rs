@@ -7,30 +7,34 @@ use std::time::Duration;
 
 use axum::body::BoxBody;
 use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
-use axum::extract::{DefaultBodyLimit, Multipart, Query, State, WebSocketUpgrade};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State, WebSocketUpgrade};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{body, Json, Router};
 use axum_extra::routing::SpaRouter;
 use byte_unit::Byte;
 use bytes::Bytes;
 use futures_channel::mpsc::Sender;
 use futures_channel::{mpsc, oneshot};
 use futures_util::{SinkExt, Stream, StreamExt, TryStreamExt};
-use http::{Response, StatusCode};
+use http::{Request, Response, StatusCode};
 use itertools::Itertools;
 use libp2p::Multiaddr;
 use tap::{Tap, TapFallible};
 use tokio::{select, time};
 use tokio_stream::wrappers::IntervalStream;
+use tower::Service;
 use tower_http::compression::CompressionLayer;
+use tower_http::services::ServeFile;
 use tracing::{error, info, instrument, warn};
 
+use self::file::FileGetter;
 use crate::command::Command;
 use crate::manipulate::http::response::{
     AddFileRequest, AddPeersRequest, GetBandWidthResponse, GetBandwidthQuery, ListFile,
     ListFilesQuery, ListPeer, ListPeersResponse, ListResponse, RemovePeersRequest,
 };
 
+mod file;
 mod response;
 
 const LIST_FILES_PATH: &str = "/list_files";
@@ -40,16 +44,17 @@ const LIST_PEERS_PATH: &str = "/list_peers";
 const GET_BANDWIDTH_PATH: &str = "/get_bandwidth";
 const ADD_PEERS_PATH: &str = "/add_peers";
 const REMOVE_PEERS_PATH: &str = "/remove_peers";
+const GET_FILE_PATH: &str = "/get_file/:filename";
 
 type UploadFileReceiver = impl Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static;
 
 #[derive(Debug, Clone)]
 pub struct Server {
-    command_sender: Sender<Command<UploadFileReceiver>>,
+    command_sender: Sender<Command<UploadFileReceiver, FileGetter>>,
 }
 
 impl Server {
-    pub fn new(command_sender: Sender<Command<UploadFileReceiver>>) -> Self {
+    pub fn new(command_sender: Sender<Command<UploadFileReceiver, FileGetter>>) -> Self {
         Self { command_sender }
     }
 
@@ -97,6 +102,14 @@ impl Server {
                     post(|State(mut server): State<Server>, req| async move {
                         server.handle_remove_peers(req).await
                     }),
+                )
+                .route(
+                    GET_FILE_PATH,
+                    get(
+                        |State(mut server): State<Server>, path, request| async move {
+                            server.handle_get_file(request, path).await
+                        },
+                    ),
                 )
                 .layer(DefaultBodyLimit::disable());
 
@@ -550,6 +563,62 @@ impl Server {
 
             Ok(Ok(_)) => Ok(()),
         }
+    }
+
+    #[instrument(skip(self))]
+    async fn handle_get_file(
+        &mut self,
+        request: Request<body::Body>,
+        Path(filename): Path<String>,
+    ) -> Result<<ServeFile as Service<Request<()>>>::Response, (StatusCode, String)> {
+        let file_getter = FileGetter::default();
+        let (result_sender, result_receiver) = oneshot::channel();
+
+        if let Err(err) = self
+            .command_sender
+            .send(Command::GetFile {
+                filename: filename.clone(),
+                file_getter,
+                result_sender,
+            })
+            .await
+        {
+            error!(%err, "send get file command failed");
+
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
+        }
+
+        let mut file_content = match result_receiver.await {
+            Err(err) => {
+                error!(%err, "receive result failed");
+
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
+            }
+
+            Ok(Err(err)) => {
+                error!(%err, "get file failed");
+
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
+            }
+
+            Ok(Ok(None)) => {
+                error!(%filename, "file not found");
+
+                return Err((StatusCode::NOT_FOUND, String::new()));
+            }
+
+            Ok(Ok(Some(file_content))) => file_content,
+        };
+
+        info!(%filename, "get file done");
+
+        let request = Request::from_parts(request.into_parts().0, ());
+
+        file_content.call(request).await.map_err(|err| {
+            error!(%err, "send file content failed");
+
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        })
     }
 }
 

@@ -24,6 +24,7 @@ use tokio::time::Interval;
 use tokio_util::time::DelayQueue;
 use tracing::{error, info};
 
+use crate::command;
 use crate::command::Command;
 use crate::config::ConfigManager;
 use crate::node::behaviour::{Behaviour, FILE_SHARE_TOPIC, MAX_CHUNK_SIZE};
@@ -50,7 +51,11 @@ const FILE_CACHE_TIMEOUT: Duration = Duration::from_secs(30);
 
 type BoxedTransport = Boxed<(PeerId, StreamMuxerBox)>;
 
-pub struct Node<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> {
+pub struct Node<FileStream, FileGetter>
+where
+    FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static,
+    FileGetter: command::FileGetter + Send + 'static,
+{
     index_dir: PathBuf,
     store_dir: PathBuf,
     swarm: Swarm<Behaviour>,
@@ -58,7 +63,7 @@ pub struct Node<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 's
     file_get_requests: HashMap<RequestId, Sender<io::Result<FileResponse>>>,
     peer_addr_receiver: DelayQueue<Multiaddr>,
     peer_addr_connecting: HashMap<PeerId, Multiaddr>,
-    command_receiver: Receiver<Command<FileStream>>,
+    command_receiver: Receiver<Command<FileStream, FileGetter>>,
     refresh_store_ticker: Interval,
     sync_file_ticker: Interval,
     cache_files: FileCache,
@@ -67,11 +72,15 @@ pub struct Node<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 's
     config_manager: ConfigManager,
 }
 
-impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node<FileStream> {
+impl<FileStream, FileGetter> Node<FileStream, FileGetter>
+where
+    FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static,
+    FileGetter: command::FileGetter + Send + 'static,
+{
     pub fn new(
         config: Config,
         peer_addr_receiver: DelayQueue<Multiaddr>,
-        command_receiver: Receiver<Command<FileStream>>,
+        command_receiver: Receiver<Command<FileStream, FileGetter>>,
         config_manager: ConfigManager,
     ) -> anyhow::Result<Self> {
         let peer_id = config.key.public().to_peer_id();
