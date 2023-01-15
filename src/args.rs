@@ -19,7 +19,7 @@ pub enum Mode {
 #[derive(Debug, Args)]
 pub struct RunArgs {
     #[arg(short, long)]
-    pub config: String,
+    pub config_dir: String,
 
     #[arg(short, long)]
     pub debug: bool,

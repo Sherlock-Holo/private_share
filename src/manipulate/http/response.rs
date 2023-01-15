@@ -45,3 +45,13 @@ pub struct GetBandWidthResponse {
     pub inbound: u64,
     pub outbound: u64,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct AddPeersRequest {
+    pub peers: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemovePeersRequest {
+    pub peers: Vec<String>,
+}

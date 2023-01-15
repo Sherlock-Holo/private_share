@@ -33,29 +33,67 @@ pub enum Command<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + '
     GetBandwidth {
         result_sender: Sender<(u64, u64)>,
     },
+
+    AddPeers {
+        peers: Vec<Multiaddr>,
+        result_sender: Sender<io::Result<()>>,
+    },
+
+    RemovePeers {
+        peers: Vec<Multiaddr>,
+        result_sender: Sender<io::Result<()>>,
+    },
 }
 
 impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Debug
     for Command<FileStream>
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut debug_struct = f.debug_struct("Command");
-
-        match self {
+        let mut debug_struct = match self {
             Command::AddFile { file_path, .. } => {
+                let mut debug_struct = f.debug_struct("Command::AddFile");
+
                 debug_struct.field("file_path", file_path);
+
+                debug_struct
             }
 
             Command::ListFiles { include_peer, .. } => {
+                let mut debug_struct = f.debug_struct("Command::ListFiles");
+
                 debug_struct.field("include_peer", include_peer);
+
+                debug_struct
             }
 
             Command::UploadFile { filename, hash, .. } => {
+                let mut debug_struct = f.debug_struct("Command::UploadFile");
+
                 debug_struct.field("filename", filename).field("hash", hash);
+
+                debug_struct
             }
 
-            Command::ListPeers { .. } | Command::GetBandwidth { .. } => {}
-        }
+            Command::ListPeers { .. } => f.debug_struct("Command::ListPeers"),
+
+            Command::GetBandwidth { .. } => f.debug_struct("Command::GetBandwidth"),
+
+            Command::AddPeers { peers, .. } => {
+                let mut debug_struct = f.debug_struct("Command::AddPeers");
+
+                debug_struct.field("peers", peers);
+
+                debug_struct
+            }
+
+            Command::RemovePeers { peers, .. } => {
+                let mut debug_struct = f.debug_struct("Command::RemovePeers");
+
+                debug_struct.field("peers", peers);
+
+                debug_struct
+            }
+        };
 
         debug_struct.finish()
     }

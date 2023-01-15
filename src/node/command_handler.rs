@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -6,13 +7,15 @@ use std::io::{Error, ErrorKind, SeekFrom};
 use std::mem;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
+use derive_builder::Builder;
 use futures_channel::oneshot::Sender;
 use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use libp2p::bandwidth::BandwidthSinks;
-use libp2p::{Multiaddr, PeerId};
+use libp2p::{Multiaddr, PeerId, Swarm};
 use rand::distributions::{Alphanumeric, DistString};
 use sha2::digest::FixedOutput;
 use sha2::{Digest, Sha256};
@@ -21,39 +24,31 @@ use tokio::fs;
 use tokio::fs::{File, OpenOptions};
 use tokio::io;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio_util::time::DelayQueue;
 use tracing::{error, info, instrument, warn};
 
 use crate::command::{Command, ListFileDetail};
+use crate::config::ConfigManager;
+use crate::node::behaviour::Behaviour;
 use crate::node::PeerNodeStore;
 use crate::util::{collect_filenames, create_temp_dir};
 
 const BUF_SIZE: usize = 1024 * 1024; // 1MiB
 
+#[derive(Builder)]
+#[builder(pattern = "owned")]
 pub struct CommandHandler<'a> {
     index_dir: &'a Path,
     store_dir: &'a Path,
-    peer_stores: &'a HashMap<PeerId, PeerNodeStore>,
+    peer_stores: &'a mut HashMap<PeerId, PeerNodeStore>,
     connected_peer: &'a HashMap<PeerId, HashSet<Multiaddr>>,
     bandwidth_sinks: &'a BandwidthSinks,
+    config_manager: &'a mut ConfigManager,
+    peer_addr_receiver: &'a mut DelayQueue<Multiaddr>,
+    swarm: &'a mut Swarm<Behaviour>,
 }
 
 impl<'a> CommandHandler<'a> {
-    pub fn new(
-        index_dir: &'a Path,
-        store_dir: &'a Path,
-        peer_stores: &'a HashMap<PeerId, PeerNodeStore>,
-        connected_peer: &'a HashMap<PeerId, HashSet<Multiaddr>>,
-        bandwidth_sinks: &'a BandwidthSinks,
-    ) -> Self {
-        Self {
-            index_dir,
-            store_dir,
-            peer_stores,
-            connected_peer,
-            bandwidth_sinks,
-        }
-    }
-
     #[instrument(skip(self))]
     pub async fn handle_command<
         FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static,
@@ -104,10 +99,29 @@ impl<'a> CommandHandler<'a> {
 
                 info!("handle list peers command done");
             }
+
             Command::GetBandwidth { result_sender } => {
                 self.handle_get_bandwidth_command(result_sender);
 
                 info!("handle get bandwidth command done");
+            }
+
+            Command::AddPeers {
+                peers,
+                result_sender,
+            } => {
+                self.handle_add_peers_command(peers, result_sender).await;
+
+                info!("handle add peers command done");
+            }
+
+            Command::RemovePeers {
+                peers,
+                result_sender,
+            } => {
+                self.handle_remove_peers_command(peers, result_sender).await;
+
+                info!("handle remove peers command done");
             }
         }
     }
@@ -509,6 +523,121 @@ impl<'a> CommandHandler<'a> {
         info!(inbound, outbound, "get inbound and outbound done");
 
         let _ = result_sender.send((inbound, outbound));
+    }
+
+    #[instrument(skip(self))]
+    async fn handle_add_peers_command(
+        &mut self,
+        mut peers: Vec<Multiaddr>,
+        result_sender: Sender<io::Result<()>>,
+    ) {
+        let mut config = self.config_manager.load();
+        peers = peers
+            .into_iter()
+            .filter(|peer| {
+                if config.peer_addrs.contains(&peer.to_string()) {
+                    info!(%peer, "peer is added, ignore");
+
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect::<Vec<_>>();
+        if peers.is_empty() {
+            let _ = result_sender.send(Ok(()));
+
+            return;
+        }
+
+        for peer in peers {
+            info!(%peer, "add peer to peer addr receiver done");
+
+            config.to_mut().peer_addrs.push(peer.to_string());
+            self.peer_addr_receiver.insert(peer, Duration::from_secs(0));
+        }
+
+        let result = self
+            .config_manager
+            .swap(Cow::Owned(config.into_owned()))
+            .await
+            .tap_ok(|_| info!("swap config done"))
+            .tap_err(|err| error!(%err, "swap config failed"))
+            .map(|_| ());
+
+        let _ = result_sender.send(result);
+    }
+
+    #[instrument(skip(self))]
+    async fn handle_remove_peers_command(
+        &mut self,
+        mut peers: Vec<Multiaddr>,
+        result_sender: Sender<io::Result<()>>,
+    ) {
+        let mut config = self.config_manager.load();
+        peers = peers
+            .into_iter()
+            .filter(|peer| {
+                if !config.peer_addrs.contains(&peer.to_string()) {
+                    info!(%peer, "peer not exists, ignore");
+
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect::<Vec<_>>();
+        if peers.is_empty() {
+            let _ = result_sender.send(Ok(()));
+
+            return;
+        }
+
+        for peer in &peers {
+            let peer_id = match PeerId::try_from_multiaddr(peer) {
+                None => {
+                    error!(%peer, "peer doesn't contain peer id");
+
+                    let _ = result_sender.send(Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("peer {peer} doesn't contain peer id"),
+                    )));
+
+                    return;
+                }
+
+                Some(peer_id) => peer_id,
+            };
+
+            info!(%peer_id, %peer, "get peer id from peer done");
+
+            // disconnect peer and remove from each behaviour
+            let _ = self.swarm.disconnect_peer_id(peer_id);
+            let behaviour = self.swarm.behaviour_mut();
+            behaviour.gossip.remove_explicit_peer(&peer_id);
+            behaviour.request_respond.remove_address(&peer_id, peer);
+
+            // remove peer from config
+            config
+                .to_mut()
+                .peer_addrs
+                .retain(|exist_peer| *exist_peer != peer.to_string());
+
+            // remove peer store info
+            self.peer_stores.remove(&peer_id);
+
+            info!(%peer_id, %peer, "remove peer done");
+        }
+
+        let result = self
+            .config_manager
+            .swap(Cow::Owned(config.into_owned()))
+            .await
+            .tap_ok(|_| info!("swap config done"))
+            .tap_err(|err| error!(%err, "swap config failed"))
+            .map(|_| ());
+
+        let _ = result_sender.send(result);
     }
 }
 

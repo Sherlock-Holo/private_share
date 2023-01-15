@@ -21,7 +21,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{fmt, Registry};
 
 use crate::args::{Cli, Mode};
-use crate::config::Config;
+use crate::config::ConfigManager;
 use crate::manipulate::http::Server;
 use crate::node::config::Config as NodeConfig;
 use crate::node::Node;
@@ -55,8 +55,11 @@ pub async fn run() -> anyhow::Result<()> {
 
     init_log(args.debug);
 
-    let config = fs::read(args.config).await?;
-    let config = serde_yaml::from_slice::<Config>(&config)?;
+    let config_manager = ConfigManager::new(args.config_dir.into()).await?;
+    let config = config_manager.load();
+    let http_listen = config.http_listen;
+    let http_ui_resources = config.http_ui_resources.clone();
+    let swarm_addr = config.swarm_listen.parse::<Multiaddr>()?;
     let keypair = load_keypair(
         Path::new(&config.secret_key_path),
         Path::new(&config.public_key_path),
@@ -65,7 +68,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let peer_addrs = config
         .peer_addrs
-        .into_iter()
+        .iter()
         .map(|addr| addr.parse::<Multiaddr>())
         .try_collect::<_, Vec<_>, _>()?;
 
@@ -84,8 +87,8 @@ pub async fn run() -> anyhow::Result<()> {
 
     let node_config = NodeConfig {
         key: keypair,
-        index_dir: config.index_dir.into(),
-        store_dir: config.store_dir.into(),
+        index_dir: config.index_dir.clone().into(),
+        store_dir: config.store_dir.clone().into(),
         handshake_key: pre_shared_key,
         refresh_store_interval: humantime::parse_duration(&config.refresh_interval)?,
         sync_file_interval: humantime::parse_duration(&config.sync_file_interval)?,
@@ -93,15 +96,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     let (command_sender, command_receiver) = mpsc::channel(1);
 
-    let mut node = Node::new(node_config, addr_queue, command_receiver)?;
+    let mut node = Node::new(node_config, addr_queue, command_receiver, config_manager)?;
     let http_server = Server::new(command_sender);
-    let swarm_addr = config.swarm_listen.parse::<Multiaddr>()?;
 
-    tokio::spawn(async move {
-        http_server
-            .listen(config.http_listen, &config.http_ui_resources)
-            .await
-    });
+    tokio::spawn(async move { http_server.listen(http_listen, &http_ui_resources).await });
 
     node.run(swarm_addr).await
 }

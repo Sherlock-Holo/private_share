@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::io::{Error, ErrorKind};
@@ -395,14 +396,19 @@ impl<'a> EventHandler<'a> {
 
     #[instrument(skip(self))]
     fn handle_connection_closed_event(&mut self, peer_id: PeerId, endpoint: ConnectedPoint) {
-        self.swarm
-            .behaviour_mut()
-            .gossip
-            .remove_explicit_peer(&peer_id);
+        let behaviour = self.swarm.behaviour_mut();
 
-        self.connected_peer.entry(peer_id).and_modify(|addrs| {
+        behaviour.gossip.remove_explicit_peer(&peer_id);
+        behaviour
+            .request_respond
+            .remove_address(&peer_id, endpoint.get_remote_address());
+
+        let entry = self.connected_peer.entry(peer_id).and_modify(|addrs| {
             addrs.remove(endpoint.get_remote_address());
         });
+        if matches!(entry, Entry::Occupied(_)) {
+            self.connected_peer.remove(&peer_id);
+        }
     }
 
     #[instrument(err, skip(self))]

@@ -25,9 +25,10 @@ use tokio_util::time::DelayQueue;
 use tracing::{error, info};
 
 use crate::command::Command;
+use crate::config::ConfigManager;
 use crate::node::behaviour::{Behaviour, FILE_SHARE_TOPIC, MAX_CHUNK_SIZE};
 pub use crate::node::behaviour::{FileRequest, FileResponse};
-use crate::node::command_handler::CommandHandler;
+use crate::node::command_handler::CommandHandlerBuilder;
 use crate::node::config::Config;
 use crate::node::event_handler::EventHandlerBuilder;
 use crate::node::file_cache::FileCache;
@@ -63,6 +64,7 @@ pub struct Node<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 's
     cache_files: FileCache,
     connected_peer: HashMap<PeerId, HashSet<Multiaddr>>,
     bandwidth_sinks: Arc<BandwidthSinks>,
+    config_manager: ConfigManager,
 }
 
 impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node<FileStream> {
@@ -70,6 +72,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
         config: Config,
         peer_addr_receiver: DelayQueue<Multiaddr>,
         command_receiver: Receiver<Command<FileStream>>,
+        config_manager: ConfigManager,
     ) -> anyhow::Result<Self> {
         let peer_id = config.key.public().to_peer_id();
 
@@ -95,6 +98,7 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
             cache_files: FileCache::new(),
             connected_peer: Default::default(),
             bandwidth_sinks,
+            config_manager,
         })
     }
 
@@ -120,18 +124,19 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
                     tokio::select! {
                         Some(event) = swarm.next() => {
                             EventHandlerBuilder::default()
-                            .index_dir(&self.index_dir)
-                            .store_dir( &self.store_dir)
-                            .swarm(swarm)
-                            .peer_stores( &mut self.peer_stores)
-                            .file_get_requests( &mut self.file_get_requests)
-                            .peer_addr_receiver(peer_addr_receiver)
-                            .peer_addr_connecting(&mut self.peer_addr_connecting)
-                            .cache_files(&mut self.cache_files)
-                            .connected_peer(&mut self.connected_peer)
-                            .build()
-                            .unwrap()
-                            .handle_event(event).await?;
+                                .index_dir(&self.index_dir)
+                                .store_dir( &self.store_dir)
+                                .swarm(swarm)
+                                .peer_stores( &mut self.peer_stores)
+                                .file_get_requests( &mut self.file_get_requests)
+                                .peer_addr_receiver(peer_addr_receiver)
+                                .peer_addr_connecting(&mut self.peer_addr_connecting)
+                                .cache_files(&mut self.cache_files)
+                                .connected_peer(&mut self.connected_peer)
+                                .build()
+                                .unwrap()
+                                .handle_event(event)
+                                .await?;
                         }
 
                         Some(addr) = peer_addr_receiver.next() => {
@@ -140,13 +145,19 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
                         }
 
                         Some(cmd) = command_receiver.next() => {
-                            CommandHandler::new(
-                                &self.index_dir,
-                                &self.store_dir,
-                                &self.peer_stores,
-                                &self.connected_peer,
-                                &self.bandwidth_sinks
-                            ).handle_command(cmd).await
+                            CommandHandlerBuilder::default()
+                                .index_dir(&self.index_dir)
+                                .store_dir(&self.store_dir)
+                                .peer_stores(&mut self.peer_stores)
+                                .connected_peer(&self.connected_peer)
+                                .bandwidth_sinks(&self.bandwidth_sinks)
+                                .config_manager(&mut self.config_manager)
+                                .peer_addr_receiver(peer_addr_receiver)
+                                .swarm(swarm)
+                                .build()
+                                .unwrap()
+                                .handle_command(cmd)
+                                .await
                         }
 
                         _ = refresh_store_ticker.tick() => {
@@ -185,18 +196,19 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
                     tokio::select! {
                         Some(event) = swarm.next() => {
                             EventHandlerBuilder::default()
-                            .index_dir(&self.index_dir)
-                            .store_dir( &self.store_dir)
-                            .swarm(swarm)
-                            .peer_stores( &mut self.peer_stores)
-                            .file_get_requests( &mut self.file_get_requests)
-                            .peer_addr_receiver(peer_addr_receiver)
-                            .peer_addr_connecting(&mut self.peer_addr_connecting)
-                            .cache_files(&mut self.cache_files)
-                            .connected_peer(&mut self.connected_peer)
-                            .build()
-                            .unwrap()
-                            .handle_event(event).await?;
+                                .index_dir(&self.index_dir)
+                                .store_dir( &self.store_dir)
+                                .swarm(swarm)
+                                .peer_stores( &mut self.peer_stores)
+                                .file_get_requests( &mut self.file_get_requests)
+                                .peer_addr_receiver(peer_addr_receiver)
+                                .peer_addr_connecting(&mut self.peer_addr_connecting)
+                                .cache_files(&mut self.cache_files)
+                                .connected_peer(&mut self.connected_peer)
+                                .build()
+                                .unwrap()
+                                .handle_event(event)
+                                .await?;
                         }
 
                         Some(addr) = peer_addr_receiver.next() => {
@@ -205,13 +217,19 @@ impl<FileStream: Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static> Node
                         }
 
                         Some(cmd) = command_receiver.next() => {
-                            CommandHandler::new(
-                                &self.index_dir,
-                                &self.store_dir,
-                                &self.peer_stores,
-                                &self.connected_peer,
-                                &self.bandwidth_sinks
-                            ).handle_command(cmd).await
+                            CommandHandlerBuilder::default()
+                                .index_dir(&self.index_dir)
+                                .store_dir(&self.store_dir)
+                                .peer_stores(&mut self.peer_stores)
+                                .connected_peer(&self.connected_peer)
+                                .bandwidth_sinks(&self.bandwidth_sinks)
+                                .config_manager(&mut self.config_manager)
+                                .peer_addr_receiver(peer_addr_receiver)
+                                .swarm(swarm)
+                                .build()
+                                .unwrap()
+                                .handle_command(cmd)
+                                .await
                         }
 
                         // syncing files task is done

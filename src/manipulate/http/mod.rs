@@ -17,6 +17,8 @@ use futures_channel::mpsc::Sender;
 use futures_channel::{mpsc, oneshot};
 use futures_util::{SinkExt, Stream, StreamExt, TryStreamExt};
 use http::{Response, StatusCode};
+use itertools::Itertools;
+use libp2p::Multiaddr;
 use tap::{Tap, TapFallible};
 use tokio::{select, time};
 use tokio_stream::wrappers::IntervalStream;
@@ -25,8 +27,8 @@ use tracing::{error, info, instrument, warn};
 
 use crate::command::Command;
 use crate::manipulate::http::response::{
-    AddFileRequest, GetBandWidthResponse, GetBandwidthQuery, ListFile, ListFilesQuery, ListPeer,
-    ListPeersResponse, ListResponse,
+    AddFileRequest, AddPeersRequest, GetBandWidthResponse, GetBandwidthQuery, ListFile,
+    ListFilesQuery, ListPeer, ListPeersResponse, ListResponse, RemovePeersRequest,
 };
 
 mod response;
@@ -36,6 +38,8 @@ const ADD_FILE_PATH: &str = "/add_file";
 const UPLOAD_FILE_PATH: &str = "/upload_file";
 const LIST_PEERS_PATH: &str = "/list_peers";
 const GET_BANDWIDTH_PATH: &str = "/get_bandwidth";
+const ADD_PEERS_PATH: &str = "/add_peers";
+const REMOVE_PEERS_PATH: &str = "/remove_peers";
 
 type UploadFileReceiver = impl Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static;
 
@@ -80,6 +84,18 @@ impl Server {
                     GET_BANDWIDTH_PATH,
                     get(|State(mut server): State<Server>, query, ws| async move {
                         server.handle_get_bandwidth(query, ws).await
+                    }),
+                )
+                .route(
+                    ADD_PEERS_PATH,
+                    post(|State(mut server): State<Server>, req| async move {
+                        server.handle_add_peers(req).await
+                    }),
+                )
+                .route(
+                    REMOVE_PEERS_PATH,
+                    post(|State(mut server): State<Server>, req| async move {
+                        server.handle_remove_peers(req).await
                     }),
                 )
                 .layer(DefaultBodyLimit::disable());
@@ -425,6 +441,114 @@ impl Server {
 
         if let Err(err) = websocket.send(Message::Text(response)).await {
             error!(%err, inbound, outbound, "send bandwidth failed");
+        }
+    }
+
+    #[instrument(skip(self))]
+    async fn handle_add_peers(
+        &mut self,
+        Json(req): Json<AddPeersRequest>,
+    ) -> Result<(), (StatusCode, String)> {
+        let peers = match req
+            .peers
+            .iter()
+            .map(|peer| Multiaddr::try_from(peer.as_str()))
+            .try_collect::<_, Vec<_>, _>()
+        {
+            Err(err) => {
+                error!(%err, ?req, "parse peers to multi addr failed");
+
+                return Err((StatusCode::BAD_REQUEST, err.to_string()));
+            }
+
+            Ok(peers) => peers,
+        };
+
+        info!(?peers, "parse peers done");
+
+        let (result_sender, result_receiver) = oneshot::channel();
+
+        if let Err(err) = self
+            .command_sender
+            .send(Command::AddPeers {
+                peers,
+                result_sender,
+            })
+            .await
+        {
+            error!(%err, "send add peers command failed");
+
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
+        }
+
+        match result_receiver.await {
+            Err(err) => {
+                error!(%err, "receive result failed");
+
+                Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+            }
+
+            Ok(Err(err)) => {
+                error!(%err, "add peers failed");
+
+                Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+            }
+
+            Ok(Ok(_)) => Ok(()),
+        }
+    }
+
+    #[instrument(skip(self))]
+    async fn handle_remove_peers(
+        &mut self,
+        Json(req): Json<RemovePeersRequest>,
+    ) -> Result<(), (StatusCode, String)> {
+        let peers = match req
+            .peers
+            .iter()
+            .map(|peer| Multiaddr::try_from(peer.as_str()))
+            .try_collect::<_, Vec<_>, _>()
+        {
+            Err(err) => {
+                error!(%err, ?req, "parse peers to multi addr failed");
+
+                return Err((StatusCode::BAD_REQUEST, err.to_string()));
+            }
+
+            Ok(peers) => peers,
+        };
+
+        info!(?peers, "parse peers done");
+
+        let (result_sender, result_receiver) = oneshot::channel();
+
+        if let Err(err) = self
+            .command_sender
+            .send(Command::RemovePeers {
+                peers,
+                result_sender,
+            })
+            .await
+        {
+            error!(%err, "send remove peers command failed");
+
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
+        }
+
+        match result_receiver.await {
+            Err(err) => {
+                error!(%err, "receive result failed");
+
+                Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+            }
+
+            Ok(Err(err)) => {
+                error!(%err, "remove peers failed");
+
+                Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+            }
+
+            Ok(Ok(_)) => Ok(()),
         }
     }
 }
