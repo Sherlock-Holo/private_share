@@ -194,10 +194,67 @@ class _PeerListState extends State<PeerList> {
           child: ExpansionTile(
             leading: const Icon(Icons.devices),
             title: SelectableText(peer.peerId),
+            trailing: IconButton(
+                onPressed: () async {
+                  await showDialog(
+                    context: context,
+                    builder: (context) {
+                      return AlertDialog(
+                        title: const Text("Remove peer"),
+                        content: Text(peer.peerId),
+                        actions: [
+                          TextButton(
+                              onPressed: () {
+                                Navigator.of(context).pop();
+                              },
+                              child: const Text("Cancel")),
+                          TextButton(
+                              onPressed: () {
+                                _removePeer(peer.addrs).then((value) {
+                                  if (value == 200) {
+                                    ScaffoldMessenger.of(context)
+                                        .showSnackBar(const SnackBar(
+                                            content: Text(
+                                      "Remove peer done",
+                                    )));
+
+                                    setState(() {});
+                                  } else {
+                                    ScaffoldMessenger.of(context)
+                                        .showSnackBar(SnackBar(
+                                            content: Text(
+                                      "Remove peer failed: $value",
+                                      style: const TextStyle(color: Colors.red),
+                                    )));
+                                  }
+
+                                  setState(() {});
+
+                                  Navigator.of(context).pop();
+                                });
+                              },
+                              child: const Text("Remove"))
+                        ],
+                      );
+                    },
+                  );
+                },
+                icon: const Icon(Icons.delete_rounded)),
             children: children,
           ),
         );
       },
     );
+  }
+
+  Future<int> _removePeer(List<String> peerAddrs) async {
+    final url = Util.getUri("/api/remove_peers");
+    final resp = await http.post(url,
+        headers: <String, String>{
+          'Content-Type': 'application/json; charset=UTF-8',
+        },
+        body: jsonEncode(<String, List<String>>{"peers": peerAddrs}));
+
+    return resp.statusCode;
   }
 }

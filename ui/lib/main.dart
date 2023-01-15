@@ -12,11 +12,11 @@ class MainApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'private share',
+      title: 'Private share',
       theme: ThemeData(
         primarySwatch: Colors.blue,
       ),
-      home: const HomePage(title: 'private share'),
+      home: const HomePage(title: 'Private share'),
     );
   }
 }

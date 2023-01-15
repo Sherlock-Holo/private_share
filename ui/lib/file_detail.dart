@@ -203,8 +203,9 @@ class FileDetail {
   final String size;
   final bool downloaded;
 
-  const FileDetail({required this.filename,
-    required this.hash,
-    required this.size,
-    required this.downloaded});
+  const FileDetail(
+      {required this.filename,
+      required this.hash,
+      required this.size,
+      required this.downloaded});
 }
