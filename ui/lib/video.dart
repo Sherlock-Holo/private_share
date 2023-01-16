@@ -1,3 +1,4 @@
+import 'package:chewie/chewie.dart';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
@@ -12,36 +13,52 @@ class Video extends StatefulWidget {
 }
 
 class _VideoState extends State<Video> {
-  late VideoPlayerController _controller;
-  late Future<void> _initializeVideoPlayerFuture;
+  late VideoPlayerController _videoController;
+  late ChewieController _chewieController;
 
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController.network(widget.url)
-      ..initialize().then((_) {
-        // Ensure the first frame is shown after the video is initialized, even
-        // before the play button has been pressed.
-        setState(() {});
-      });
 
-    // Initialize the controller and store the Future for later use.
-    _initializeVideoPlayerFuture = _controller.initialize();
+    _videoController = VideoPlayerController.network(widget.url);
+  }
+
+  Future<ChewieController> _initVideo() async {
+    await _videoController.initialize();
+
+    _chewieController = ChewieController(
+      videoPlayerController: _videoController,
+      autoPlay: false,
+      looping: false,
+    );
+
+    return _chewieController;
   }
 
   @override
   Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.filename),
+      ),
+      body: Center(
+        child: _buildVideoWidget(),
+      ),
+    );
+  }
+
+  Widget _buildVideoWidget() {
     return FutureBuilder(
-      future: _initializeVideoPlayerFuture,
+      future: _initVideo(),
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.done) {
-          // If the VideoPlayerController has finished initialization, use
-          // the data it provides to limit the aspect ratio of the video.
+        if (snapshot.hasData) {
           return AspectRatio(
-            aspectRatio: _controller.value.aspectRatio,
+            aspectRatio: _videoController.value.aspectRatio,
             // Use the VideoPlayer widget to display the video.
-            child: VideoPlayer(_controller),
+            child: Chewie(controller: snapshot.data!),
           );
+        } else if (snapshot.hasError) {
+          return Text(snapshot.error.toString());
         } else {
           // If the VideoPlayerController is still initializing, show a
           // loading spinner.
@@ -55,7 +72,8 @@ class _VideoState extends State<Video> {
 
   @override
   void dispose() {
+    _videoController.dispose();
+    _chewieController.dispose();
     super.dispose();
-    _controller.dispose();
   }
 }

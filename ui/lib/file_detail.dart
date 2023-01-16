@@ -116,13 +116,7 @@ class _FileListState extends State<FileList> {
   }
 
   Future<List<FileDetail>> _getFileList() async {
-    Uri url;
-    if (Uri.base.scheme == "http") {
-      url = Uri.http(Uri.base.authority, "/api/list_files");
-    } else {
-      url = Uri.https(Uri.base.authority, "/api/list_files");
-    }
-
+    final url = Util.getUri("/api/list_files");
     final resp = await http.get(url);
     if (resp.statusCode != 200) {
       throw Exception("status code ${resp.statusCode} != 200");
@@ -200,14 +194,12 @@ class _FileListState extends State<FileList> {
                 icon = const Icon(Icons.video_file_rounded);
                 fileDetailButtons = [
                   TextButton(
-                      onPressed: () async {
-                        await showDialog(
-                          context: context,
-                          barrierDismissible: true,
+                      onPressed: () {
+                        Navigator.push(context, MaterialPageRoute(
                           builder: (context) {
                             return Video(url: url, filename: file.filename);
                           },
-                        );
+                        ));
                       },
                       child: Column(
                         children: const [
