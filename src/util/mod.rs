@@ -64,7 +64,7 @@ pub async fn load_keypair(secret_path: &Path, public_path: &Path) -> anyhow::Res
     let public = fs::read_to_string(public_path).await?;
     let public = PublicKeyBytes::from_public_key_pem(&public)?;
 
-    keypair.public_key.replace(public.to_bytes());
+    keypair.public_key.replace(public);
 
     let keypair = identity::ed25519::Keypair::decode(&mut keypair.to_bytes().unwrap())?;
     Ok(Keypair::Ed25519(keypair))

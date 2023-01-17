@@ -10,7 +10,6 @@ use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State, WebSocketUpgrade};
 use axum::routing::{get, post};
 use axum::{body, Json, Router};
-use axum_extra::routing::SpaRouter;
 use byte_unit::Byte;
 use bytes::Bytes;
 use futures_channel::mpsc::Sender;
@@ -23,19 +22,20 @@ use tap::{Tap, TapFallible};
 use tokio::{select, time};
 use tokio_stream::wrappers::IntervalStream;
 use tower::Service;
-use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeFile;
 use tracing::{error, info, instrument, warn};
 
 use self::file::FileGetter;
-use crate::command::Command;
-use crate::manipulate::http::response::{
+use self::response::{
     AddFileRequest, AddPeersRequest, GetBandWidthResponse, GetBandwidthQuery, ListFile,
     ListFilesQuery, ListPeer, ListPeersResponse, ListResponse, RemovePeersRequest,
 };
+use self::static_router::StaticRouter;
+use crate::command::Command;
 
 mod file;
 mod response;
+mod static_router;
 
 const LIST_FILES_PATH: &str = "/list_files";
 const ADD_FILE_PATH: &str = "/add_file";
@@ -115,10 +115,7 @@ impl Server {
 
         let router = Router::new()
             .nest("/api", api_router)
-            .merge(
-                Router::from(SpaRouter::new("/ui", http_ui_resources))
-                    .layer(CompressionLayer::new().br(true)),
-            )
+            .merge(Router::from(StaticRouter::new("/ui", http_ui_resources)))
             .with_state(self);
 
         axum::Server::bind(&addr)
