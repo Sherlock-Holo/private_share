@@ -8,7 +8,7 @@ import 'package:http_parser/http_parser.dart';
 import 'package:mime/mime.dart';
 import 'package:ui/list_file_response.dart';
 import 'package:ui/util.dart';
-import 'package:ui/video.dart';
+import 'package:ui/video.dart' deferred as video;
 import 'package:universal_html/html.dart';
 
 class FileList extends StatefulWidget {
@@ -135,6 +135,10 @@ class _FileListState extends State<FileList> {
     }).toList();
   }
 
+  Future<void> _loadVideoLibrary() async {
+    await video.loadLibrary();
+  }
+
   Widget _buildList(List<FileDetail> files) {
     return ListView.builder(
       itemCount: files.length,
@@ -197,7 +201,22 @@ class _FileListState extends State<FileList> {
                       onPressed: () {
                         Navigator.push(context, MaterialPageRoute(
                           builder: (context) {
-                            return Video(url: url, filename: file.filename);
+                            return FutureBuilder<void>(
+                              future: _loadVideoLibrary(),
+                              builder: (context, snapshot) {
+                                if (snapshot.connectionState ==
+                                    ConnectionState.done) {
+                                  return video.Video(
+                                      url: url, filename: file.filename);
+                                } else {
+                                  return const SizedBox(
+                                    width: 60,
+                                    height: 60,
+                                    child: CircularProgressIndicator(),
+                                  );
+                                }
+                              },
+                            );
                           },
                         ));
                       },
