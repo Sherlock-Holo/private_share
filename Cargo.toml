@@ -5,6 +5,8 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+build = "build.rs"
+
 [profile.dev]
 opt-level = 1               # Use slightly better optimizations.
 
@@ -32,7 +34,7 @@ itertools = "0.10"
 http = "0.2"
 axum = { version = "0.6", features = ["http2", "multipart", "ws"] }
 tower = "0.4"
-tower-http = { version = "0.3", features = ["compression-br", "fs"] }
+http_dir = { version = "0.1", features = ["compression-br"] }
 ed25519 = { version = "2", features = ["pkcs8", "pem", "alloc"] }
 pkcs8 = { version = "0.9", features = ["std"] } # to enable ed25519 error impl std error
 clap = { version = "4", features = ["derive"] }
@@ -42,6 +44,11 @@ rand = "0.8"
 tokio-util = { version = "0.7", features = ["time"] }
 lru = "0.9"
 derive_builder = "0.12"
+include_dir = "0.7"
+
+[features]
+default = ["build-web"]
+build-web = []
 
 [dependencies.libp2p]
 version = "0.50"
@@ -62,3 +69,8 @@ features = [
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+brotli = { version = "3", features = ["simd"] }
+walkdir = "2"
+rayon = "1"

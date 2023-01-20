@@ -16,13 +16,13 @@ use futures_channel::mpsc::Sender;
 use futures_channel::{mpsc, oneshot};
 use futures_util::{SinkExt, Stream, StreamExt, TryStreamExt};
 use http::{Request, Response, StatusCode};
+use http_dir::ResponseBody;
 use itertools::Itertools;
 use libp2p::Multiaddr;
 use tap::{Tap, TapFallible};
 use tokio::{select, time};
 use tokio_stream::wrappers::IntervalStream;
 use tower::Service;
-use tower_http::services::ServeFile;
 use tracing::{error, info, instrument, warn};
 
 use self::file::FileGetter;
@@ -35,6 +35,7 @@ use crate::command::Command;
 
 mod file;
 mod response;
+mod static_resources;
 mod static_router;
 
 const LIST_FILES_PATH: &str = "/list_files";
@@ -58,7 +59,7 @@ impl Server {
         Self { command_sender }
     }
 
-    pub async fn listen(self, addr: SocketAddr, http_ui_resources: &str) -> anyhow::Result<()> {
+    pub async fn listen(self, addr: SocketAddr) -> anyhow::Result<()> {
         let api_router =
             Router::new()
                 .route(
@@ -115,7 +116,7 @@ impl Server {
 
         let router = Router::new()
             .nest("/api", api_router)
-            .merge(Router::from(StaticRouter::new("/ui", http_ui_resources)))
+            .nest("/ui", StaticRouter::default().into())
             .with_state(self);
 
         axum::Server::bind(&addr)
@@ -567,15 +568,14 @@ impl Server {
         &mut self,
         request: Request<body::Body>,
         Path(filename): Path<String>,
-    ) -> Result<<ServeFile as Service<Request<()>>>::Response, (StatusCode, String)> {
-        let file_getter = FileGetter::default();
+    ) -> Result<Response<ResponseBody>, (StatusCode, String)> {
         let (result_sender, result_receiver) = oneshot::channel();
 
         if let Err(err) = self
             .command_sender
             .send(Command::GetFile {
                 filename: filename.clone(),
-                file_getter,
+                file_getter: FileGetter::default(),
                 result_sender,
             })
             .await

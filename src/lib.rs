@@ -58,7 +58,6 @@ pub async fn run() -> anyhow::Result<()> {
     let config_manager = ConfigManager::new(args.config_dir.into()).await?;
     let config = config_manager.load();
     let http_listen = config.http_listen;
-    let http_ui_resources = config.http_ui_resources.clone();
     let swarm_addr = config.swarm_listen.parse::<Multiaddr>()?;
     let keypair = load_keypair(
         Path::new(&config.secret_key_path),
@@ -99,7 +98,7 @@ pub async fn run() -> anyhow::Result<()> {
     let mut node = Node::new(node_config, addr_queue, command_receiver, config_manager)?;
     let http_server = Server::new(command_sender);
 
-    tokio::spawn(async move { http_server.listen(http_listen, &http_ui_resources).await });
+    tokio::spawn(async move { http_server.listen(http_listen).await });
 
     node.run(swarm_addr).await
 }
