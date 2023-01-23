@@ -19,7 +19,7 @@ pub struct Config {
     pub refresh_interval: String,
     pub sync_file_interval: String,
     pub peer_addrs: Vec<String>,
-    pub http_listen: SocketAddr,
+    pub http_listen: Vec<SocketAddr>,
     pub swarm_listen: String,
 }
 

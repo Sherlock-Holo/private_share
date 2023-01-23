@@ -1,21 +1,24 @@
 use std::borrow::Cow;
-use std::error::Error;
+use std::fmt::{Debug, Display};
 use std::io;
 use std::io::ErrorKind;
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::body::BoxBody;
 use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
-use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State, WebSocketUpgrade};
+use axum::extract::{
+    ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State, WebSocketUpgrade,
+};
 use axum::routing::{get, post};
 use axum::{body, Json, Router};
+use base64::prelude::BASE64_STANDARD;
+use base64::Engine;
 use byte_unit::Byte;
 use bytes::Bytes;
 use futures_channel::mpsc::Sender;
 use futures_channel::{mpsc, oneshot};
-use futures_util::{SinkExt, Stream, StreamExt, TryStreamExt};
-use http::{Request, Response, StatusCode};
+use futures_util::{pin_mut, SinkExt, Stream, StreamExt, TryStreamExt};
+use http::{Request, Response, StatusCode, Uri};
 use http_dir::ResponseBody;
 use itertools::Itertools;
 use libp2p::Multiaddr;
@@ -25,19 +28,24 @@ use tokio_stream::wrappers::IntervalStream;
 use tower::Service;
 use tracing::{error, info, instrument, warn};
 
+pub use self::addr_incoming::MultiAddrListener;
+use self::dlna::TV;
 use self::file::FileGetter;
-use self::response::{
-    AddFileRequest, AddPeersRequest, GetBandWidthResponse, GetBandwidthQuery, ListFile,
-    ListFilesQuery, ListPeer, ListPeersResponse, ListResponse, RemovePeersRequest,
-};
+use self::response::*;
+use self::socket_addr_peer::SocketAddrPeer;
 use self::static_router::StaticRouter;
 use crate::command::Command;
 
+mod addr_incoming;
+mod dlna;
 mod file;
 mod response;
+mod socket_addr_peer;
 mod static_resources;
 mod static_router;
 
+const API_PREFIX: &str = "/api";
+const UI_PREFIX: &str = "/ui";
 const LIST_FILES_PATH: &str = "/list_files";
 const ADD_FILE_PATH: &str = "/add_file";
 const UPLOAD_FILE_PATH: &str = "/upload_file";
@@ -46,6 +54,8 @@ const GET_BANDWIDTH_PATH: &str = "/get_bandwidth";
 const ADD_PEERS_PATH: &str = "/add_peers";
 const REMOVE_PEERS_PATH: &str = "/remove_peers";
 const GET_FILE_PATH: &str = "/get_file/:filename";
+const LIST_TV_PATH: &str = "/list_tv";
+const PLAY_TV_PATH: &str = "/play_tv/:encoded_tv_url/:filename";
 
 type UploadFileReceiver = impl Stream<Item = io::Result<Bytes>> + Unpin + Send + 'static;
 
@@ -59,7 +69,7 @@ impl Server {
         Self { command_sender }
     }
 
-    pub async fn listen(self, addr: SocketAddr) -> anyhow::Result<()> {
+    pub async fn listen(self, incoming: MultiAddrListener) -> anyhow::Result<()> {
         let api_router =
             Router::new()
                 .route(
@@ -112,15 +122,29 @@ impl Server {
                         },
                     ),
                 )
+                .route(
+                    LIST_TV_PATH,
+                    get(|State(mut server): State<Server>, query, ws| async move {
+                        server.handle_list_tv(query, ws).await
+                    }),
+                )
+                .route(
+                    PLAY_TV_PATH,
+                    post(
+                        |State(mut server): State<Server>, url_path, connect_info| async move {
+                            server.handle_play_video(url_path, connect_info).await
+                        },
+                    ),
+                )
                 .layer(DefaultBodyLimit::disable());
 
         let router = Router::new()
-            .nest("/api", api_router)
-            .nest("/ui", StaticRouter::default().into())
+            .nest(API_PREFIX, api_router)
+            .nest(UI_PREFIX, StaticRouter::default().into())
             .with_state(self);
 
-        axum::Server::bind(&addr)
-            .serve(router.into_make_service())
+        axum::Server::builder(incoming)
+            .serve(router.into_make_service_with_connect_info::<SocketAddrPeer>())
             .await?;
 
         Ok(())
@@ -617,6 +641,163 @@ impl Server {
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         })
     }
+
+    #[instrument(skip(self))]
+    async fn handle_list_tv(
+        &mut self,
+        Query(list_tv_query): Query<ListTVQuery>,
+        ws: WebSocketUpgrade,
+    ) -> Response<BoxBody> {
+        let interval = Duration::from_millis(list_tv_query.timeout.unwrap_or(1000) as _);
+
+        ws.on_upgrade(move |mut websocket| async move {
+            let tv_stream = match dlna::list_tv(interval).await {
+                Err(err) => {
+                    error!(%err, "list tv failed");
+
+                    websocket_close_with_err(&mut websocket, err).await;
+
+                    return;
+                }
+
+                Ok(tv_stream) => tv_stream,
+            };
+
+            pin_mut!(tv_stream);
+
+            while let Some(tv) = tv_stream.next().await {
+                let tv = match tv {
+                    Err(err) => {
+                        error!(%err, "get next tv failed");
+
+                        websocket_close_with_err(&mut websocket, err).await;
+
+                        return;
+                    }
+
+                    Ok(tv) => tv,
+                };
+
+                info!(?tv, "get next tv done");
+
+                let response = ListTVResponse {
+                    friend_name: tv.friend_name().to_string(),
+                    encoded_url: BASE64_STANDARD.encode(tv.url()),
+                };
+                let response = match serde_json::to_string(&response) {
+                    Err(err) => {
+                        error!(%err, ?response, "marshal list tv response failed");
+
+                        websocket_close_with_err(&mut websocket, err).await;
+
+                        return;
+                    }
+
+                    Ok(resp) => resp,
+                };
+
+                info!(%response, "marshal list tv response done");
+
+                if let Err(err) = websocket.send(Message::Text(response)).await {
+                    error!(%err, "send list tv response failed");
+
+                    websocket_close_with_err(&mut websocket, err).await;
+
+                    return;
+                }
+
+                info!("send list tv response done");
+            }
+
+            info!("send all tv done");
+        })
+    }
+
+    #[instrument(skip(self))]
+    async fn handle_play_video(
+        &mut self,
+        Path((encoded_tv_url, filename)): Path<(String, String)>,
+        ConnectInfo(addr_peer): ConnectInfo<SocketAddrPeer>,
+    ) -> Result<(), (StatusCode, String)> {
+        let tv_url = match BASE64_STANDARD.decode(&encoded_tv_url) {
+            Err(err) => {
+                error!(%err, %encoded_tv_url, "parse b64 encoded tv url failed");
+
+                return Err((StatusCode::BAD_REQUEST, err.to_string()));
+            }
+
+            Ok(tv_url) => match String::from_utf8(tv_url) {
+                Err(err) => {
+                    error!(%err, %encoded_tv_url, "encoded tv url is not valid utf8 string");
+
+                    return Err((StatusCode::BAD_REQUEST, err.to_string()));
+                }
+
+                Ok(tv_url) => tv_url,
+            },
+        };
+
+        let tv_url = match tv_url.parse::<Uri>() {
+            Err(err) => {
+                error!(%err, %tv_url, "parse tv url failed");
+
+                return Err((StatusCode::BAD_REQUEST, err.to_string()));
+            }
+
+            Ok(tv_url) => tv_url,
+        };
+
+        info!(%tv_url, "parse tv url done");
+
+        let tv = match TV::from_url(tv_url.clone()).await {
+            Err(err) => {
+                error!(%err, %tv_url, "get tv from url failed");
+
+                return Err((StatusCode::BAD_REQUEST, err.to_string()));
+            }
+
+            Ok(None) => {
+                error!(%tv_url, "tv not exists");
+
+                return Err((StatusCode::NOT_FOUND, format!("tv {tv_url} not exists")));
+            }
+
+            Ok(Some(tv)) => tv,
+        };
+
+        info!(?tv, %tv_url, "get tv from url done");
+
+        let get_file_url_path = format!(
+            "{API_PREFIX}/{}",
+            GET_FILE_PATH.replace(":filename", &filename)
+        );
+
+        let port = addr_peer
+            .local
+            .ok_or_else(|| {
+                error!("can't get local tcp port");
+
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "can't get local tcp port".to_string(),
+                )
+            })?
+            .port();
+
+        match tv.play(port, &get_file_url_path).await {
+            Err(err) => {
+                error!(%err, port, %get_file_url_path, "play video failed");
+
+                Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+            }
+
+            Ok(_) => {
+                info!(port, %get_file_url_path, "play video done");
+
+                Ok(())
+            }
+        }
+    }
 }
 
 #[instrument]
@@ -663,7 +844,7 @@ async fn handle_websocket_in_message(
 }
 
 #[instrument]
-async fn websocket_close_with_err<E: Error>(websocket: &mut WebSocket, err: E) {
+async fn websocket_close_with_err<E: Debug + Display>(websocket: &mut WebSocket, err: E) {
     if let Err(err) = websocket
         .send(Message::Close(Some(CloseFrame {
             code: close_code::ERROR,

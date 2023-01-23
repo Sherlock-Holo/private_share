@@ -11,8 +11,8 @@ use rayon::prelude::*;
 use walkdir::WalkDir;
 
 fn main() {
-    if cfg!(features = "build-web") {
-        println!("cargo:rerun-if-changed=./ui");
+    if cfg!(feature = "build-web") {
+        println!("cargo:rerun-if-changed=./ui/lib");
 
         clean_web();
         build_web();

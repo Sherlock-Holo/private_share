@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use futures_channel::mpsc;
+use futures_util::stream;
 use itertools::Itertools;
 use libp2p::pnet::PreSharedKey;
 use libp2p::Multiaddr;
@@ -22,7 +23,7 @@ use tracing_subscriber::{fmt, Registry};
 
 use crate::args::{Cli, Mode};
 use crate::config::ConfigManager;
-use crate::manipulate::http::Server;
+use crate::manipulate::http::{MultiAddrListener, Server};
 use crate::node::config::Config as NodeConfig;
 use crate::node::Node;
 use crate::util::load_keypair;
@@ -57,7 +58,6 @@ pub async fn run() -> anyhow::Result<()> {
 
     let config_manager = ConfigManager::new(args.config_dir.into()).await?;
     let config = config_manager.load();
-    let http_listen = config.http_listen;
     let swarm_addr = config.swarm_listen.parse::<Multiaddr>()?;
     let keypair = load_keypair(
         Path::new(&config.secret_key_path),
@@ -95,10 +95,12 @@ pub async fn run() -> anyhow::Result<()> {
 
     let (command_sender, command_receiver) = mpsc::channel(1);
 
+    let multi_addr_listener =
+        MultiAddrListener::new(stream::iter(config.http_listen.iter().copied())).await?;
     let mut node = Node::new(node_config, addr_queue, command_receiver, config_manager)?;
     let http_server = Server::new(command_sender);
 
-    tokio::spawn(async move { http_server.listen(http_listen).await });
+    tokio::spawn(async move { http_server.listen(multi_addr_listener).await });
 
     node.run(swarm_addr).await
 }

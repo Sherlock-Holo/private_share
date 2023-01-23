@@ -55,3 +55,14 @@ pub struct AddPeersRequest {
 pub struct RemovePeersRequest {
     pub peers: Vec<String>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct ListTVQuery {
+    pub timeout: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListTVResponse {
+    pub friend_name: String,
+    pub encoded_url: String,
+}

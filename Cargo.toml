@@ -12,7 +12,7 @@ opt-level = 1               # Use slightly better optimizations.
 
 [dependencies]
 tokio = { version = "1", features = ["net", "fs", "macros", "io-util", "time", "rt-multi-thread"] }
-tokio-stream = { version = "0.1", features = ["fs"] }
+tokio-stream = { version = "0.1", features = ["fs", "net"] }
 futures-util = "0.3"
 futures-channel = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -34,6 +34,7 @@ itertools = "0.10"
 http = "0.2"
 axum = { version = "0.6", features = ["http2", "multipart", "ws"] }
 tower = "0.4"
+hyper = { version = "0.14", features = ["server"] }
 http_dir = { version = "0.1", features = ["compression-br"] }
 ed25519 = { version = "2", features = ["pkcs8", "pem", "alloc"] }
 pkcs8 = { version = "0.9", features = ["std"] } # to enable ed25519 error impl std error
@@ -45,6 +46,9 @@ tokio-util = { version = "0.7", features = ["time"] }
 lru = "0.9"
 derive_builder = "0.12"
 include_dir = "0.7"
+xml-rs = "0.8"
+rupnp = "1"
+base64 = "0.21"
 
 [features]
 default = ["build-web"]

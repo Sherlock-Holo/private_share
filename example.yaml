@@ -7,5 +7,7 @@ refresh_interval: 10s
 sync_file_interval: 20s
 peer_addrs:
   - /ip4/127.0.0.1/tcp/29999/ws/p2p/12D3KooWRm2KDcYrLKUHb52pdsTknvkYfD6fKevLyAh1HtJhZQsi
-http_listen: 127.0.0.1:19998
+http_listen:
+  - 127.0.0.1:19998
+  - 10.100.111.47:19998
 swarm_listen: /ip4/0.0.0.0/tcp/19999/ws
