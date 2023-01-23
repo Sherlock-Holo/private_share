@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::fmt::{Debug, Display};
+use std::future::ready;
 use std::io;
 use std::io::ErrorKind;
 use std::time::Duration;
@@ -9,6 +10,7 @@ use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket};
 use axum::extract::{
     ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State, WebSocketUpgrade,
 };
+use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::{body, Json, Router};
 use base64::prelude::BASE64_STANDARD;
@@ -141,6 +143,7 @@ impl Server {
         let router = Router::new()
             .nest(API_PREFIX, api_router)
             .nest(UI_PREFIX, StaticRouter::default().into())
+            .fallback(|| ready(Redirect::temporary("/ui")))
             .with_state(self);
 
         axum::Server::builder(incoming)
@@ -648,68 +651,127 @@ impl Server {
         Query(list_tv_query): Query<ListTVQuery>,
         ws: WebSocketUpgrade,
     ) -> Response<BoxBody> {
-        let interval = Duration::from_millis(list_tv_query.timeout.unwrap_or(1000) as _);
+        let mut timeout = Duration::from_millis(list_tv_query.timeout.unwrap_or(10000) as _);
 
         ws.on_upgrade(move |mut websocket| async move {
-            let tv_stream = match dlna::list_tv(interval).await {
-                Err(err) => {
-                    error!(%err, "list tv failed");
-
-                    websocket_close_with_err(&mut websocket, err).await;
-
-                    return;
-                }
-
-                Ok(tv_stream) => tv_stream,
-            };
-
-            pin_mut!(tv_stream);
-
-            while let Some(tv) = tv_stream.next().await {
-                let tv = match tv {
+            loop {
+                let tv_stream = match dlna::list_tv(timeout).await {
                     Err(err) => {
-                        error!(%err, "get next tv failed");
+                        error!(%err, "list tv failed");
 
                         websocket_close_with_err(&mut websocket, err).await;
 
                         return;
                     }
 
-                    Ok(tv) => tv,
+                    Ok(tv_stream) => tv_stream,
                 };
 
-                info!(?tv, "get next tv done");
+                info!("get list tv stream done");
 
-                let response = ListTVResponse {
-                    friend_name: tv.friend_name().to_string(),
-                    encoded_url: BASE64_STANDARD.encode(tv.url()),
-                };
-                let response = match serde_json::to_string(&response) {
-                    Err(err) => {
-                        error!(%err, ?response, "marshal list tv response failed");
+                pin_mut!(tv_stream);
 
-                        websocket_close_with_err(&mut websocket, err).await;
+                loop {
+                    select! {
+                        msg = websocket.recv() => {
+                            let msg = match msg {
+                                None => return,
+                                Some(Err(err)) => {
+                                    error!(%err, "receive websocket message failed");
 
-                        return;
+                                    websocket_close_with_err(&mut websocket, err).await;
+
+                                    return;
+                                }
+
+                                Some(Ok(msg)) => msg
+                            };
+
+                            let relist_req = match msg {
+                                Message::Close(_) => {
+                                    if let Err(err) = websocket.close().await {
+                                        error!(%err, "close websocket failed");
+                                    }
+
+                                    return;
+                                }
+
+                                Message::Ping(_) | Message::Pong(_) | Message::Binary(_) => {
+                                    warn!("unexpected websocket binary, ping or pong message");
+
+                                    continue;
+                                }
+
+                                Message::Text(relist_req) => {
+                                    match serde_json::from_str::<ReListTV>(&relist_req) {
+                                        Err(err) => {
+                                            error!(%err, %relist_req, "unmarshal relist tv request failed");
+
+                                            websocket_close_with_err(&mut websocket, err).await;
+
+                                            return;
+                                        }
+
+                                        Ok(relist_req) => {
+                                            info!(?relist_req, "unmarshal relist tv request done");
+
+                                            relist_req
+                                        }
+                                    }
+                                }
+                            };
+
+                            timeout = Duration::from_millis(relist_req.timeout.unwrap_or(10000) as _);
+
+                            break;
+                        }
+
+                        Some(tv) = tv_stream.next() => {
+                            let tv = match tv {
+                                Err(err) => {
+                                    error!(%err, "get next tv failed");
+
+                                    websocket_close_with_err(&mut websocket, err).await;
+
+                                    return;
+                                }
+
+                                Ok(tv) => tv
+                            };
+
+                            info!(?tv, "get next tv done");
+
+                            let response = ListTVResponse {
+                                friend_name: tv.friend_name().to_string(),
+                                encoded_url: BASE64_STANDARD.encode(tv.url()),
+                            };
+                            let response = match serde_json::to_string(&response) {
+                                Err(err) => {
+                                    error!(%err, ?response, "marshal list tv response failed");
+
+                                    websocket_close_with_err(&mut websocket, err).await;
+
+                                    return;
+                                }
+
+                                Ok(resp) => resp,
+                            };
+
+                            info!(%response, "marshal list tv response done");
+
+                            if let Err(err) = websocket.send(Message::Text(response)).await {
+                                error!(%err, "send list tv response failed");
+
+                                websocket_close_with_err(&mut websocket, err).await;
+
+                                return;
+                            }
+
+                            info!("send list tv response done");
+                        }
                     }
-
-                    Ok(resp) => resp,
-                };
-
-                info!(%response, "marshal list tv response done");
-
-                if let Err(err) = websocket.send(Message::Text(response)).await {
-                    error!(%err, "send list tv response failed");
-
-                    websocket_close_with_err(&mut websocket, err).await;
-
-                    return;
                 }
-
-                info!("send list tv response done");
             }
-
-            info!("send all tv done");
         })
     }
 

@@ -61,6 +61,11 @@ pub struct ListTVQuery {
     pub timeout: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ReListTV {
+    pub timeout: Option<u32>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ListTVResponse {
     pub friend_name: String,
