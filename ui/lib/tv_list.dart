@@ -18,7 +18,7 @@ class TvList extends StatefulWidget {
 
 class _TvListState extends State<TvList> {
   late final WebSocketChannel _webSocketChannel;
-  Map<String, ListTVResponse> tvs = {};
+  final Map<String, ListTVResponse> _tvs = {};
 
   @override
   void initState() {
@@ -30,9 +30,57 @@ class _TvListState extends State<TvList> {
   }
 
   @override
+  void dispose() {
+    _webSocketChannel.sink.close();
+
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AlertDialog(
-        title: const Text("Video List"), content: _streamingBuildTVList());
+      title: const Text("Video List"),
+      content: Container(
+        constraints: const BoxConstraints(maxHeight: 500, minWidth: 300),
+        child: _streamingBuildTVList(),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () {
+              setState(() {
+                _refreshTVList();
+              });
+            },
+            child: Column(
+              children: const [
+                Icon(Icons.refresh_rounded),
+                Padding(
+                  padding: EdgeInsets.symmetric(vertical: 2.0),
+                ),
+                Text("Refresh")
+              ],
+            )),
+        TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+            },
+            child: Column(
+              children: const [
+                Icon(Icons.close_rounded),
+                Padding(
+                  padding: EdgeInsets.symmetric(vertical: 2.0),
+                ),
+                Text("Close")
+              ],
+            ))
+      ],
+    );
+  }
+
+  void _refreshTVList() {
+    _webSocketChannel.sink.add(jsonEncode({"timeout": 10000}));
+
+    _tvs.clear();
   }
 
   Widget _streamingBuildTVList() {
@@ -43,7 +91,7 @@ class _TvListState extends State<TvList> {
           final json =
               jsonDecode(snapshot.data!.toString()) as Map<String, dynamic>;
           final tv = ListTVResponse.fromJson(json);
-          tvs[tv.encodedUrl] = tv;
+          _tvs[tv.encodedUrl] = tv;
         } else if (snapshot.hasError) {
           return Text(
             snapshot.error.toString(),
@@ -57,7 +105,7 @@ class _TvListState extends State<TvList> {
   }
 
   Widget _buildTVList() {
-    final tvList = tvs.values.toList();
+    final tvList = _tvs.values.toList();
     tvList.sort((a, b) => a.friendName.compareTo(b.friendName));
 
     return ListView.builder(
@@ -74,7 +122,7 @@ class _TvListState extends State<TvList> {
     return Card(
       child: ListTile(
         leading: const Icon(Icons.tv_rounded),
-        title: SelectableText(tv.friendName),
+        title: Text(tv.friendName),
         onTap: () {
           _playVideo(tv).then((value) {
             if (value != 200) {
