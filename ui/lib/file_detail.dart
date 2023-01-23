@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:mime/mime.dart';
 import 'package:ui/list_file_response.dart';
+import 'package:ui/tv_list.dart' deferred as tv_list;
 import 'package:ui/util.dart';
 import 'package:ui/video.dart' deferred as video;
 import 'package:universal_html/html.dart';
@@ -139,6 +140,10 @@ class _FileListState extends State<FileList> {
     await video.loadLibrary();
   }
 
+  Future<void> _loadTVLibrary() async {
+    await tv_list.loadLibrary();
+  }
+
   Widget _buildList(List<FileDetail> files) {
     return ListView.builder(
       itemCount: files.length,
@@ -197,6 +202,36 @@ class _FileListState extends State<FileList> {
               {
                 icon = const Icon(Icons.video_file_rounded);
                 fileDetailButtons = [
+                  TextButton(
+                      onPressed: () async {
+                        await showDialog(
+                          context: context,
+                          builder: (context) => FutureBuilder<void>(
+                            future: _loadTVLibrary(),
+                            builder: (context, snapshot) {
+                              if (snapshot.connectionState ==
+                                  ConnectionState.done) {
+                                return tv_list.TvList(filename: file.filename);
+                              } else {
+                                return const SizedBox(
+                                  width: 60,
+                                  height: 60,
+                                  child: CircularProgressIndicator(),
+                                );
+                              }
+                            },
+                          ),
+                        );
+                      },
+                      child: Column(
+                        children: const [
+                          Icon(Icons.tv_rounded),
+                          Padding(
+                            padding: EdgeInsets.symmetric(vertical: 2.0),
+                          ),
+                          Text("Play On TV")
+                        ],
+                      )),
                   TextButton(
                       onPressed: () {
                         Navigator.push(context, MaterialPageRoute(
