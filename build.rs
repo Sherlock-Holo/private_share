@@ -47,7 +47,7 @@ fn clean_web() {
 
 fn build_web() {
     let output = Command::new("flutter")
-        .args("build web --verbose --base-href /ui/ --dart-define FLUTTER_WEB_CANVASKIT_URL=https://npm.elemecdn.com/canvaskit-wasm@0.35.0/bin/".split(' '))
+        .args("build web --verbose --base-href /ui/ --dart-define FLUTTER_WEB_CANVASKIT_URL=https://npm.elemecdn.com/canvaskit-wasm@0.37.1/bin/".split(' '))
         .current_dir("./ui")
         .output()
         .unwrap_or_else(|err| panic!("start flutter build web failed: {err}"));
