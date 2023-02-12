@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use libp2p::{Multiaddr, PeerId, Swarm};
-use tap::TapFallible;
 use tracing::{error, info, instrument};
 
 use crate::node::behaviour::Behaviour;
@@ -22,13 +21,17 @@ impl<'a> PeerConnector<'a> {
         }
     }
 
-    #[instrument(err, skip(self))]
-    pub async fn connect_peer(self, addr: Multiaddr) -> anyhow::Result<()> {
-        let peer_id = PeerId::try_from_multiaddr(&addr).ok_or_else(|| {
-            error!(%addr, "addr doesn't contain peer id");
+    #[instrument(skip(self))]
+    pub async fn connect_peer(self, addr: Multiaddr) {
+        let peer_id = match PeerId::try_from_multiaddr(&addr) {
+            None => {
+                error!(%addr, "addr doesn't contain peer id");
 
-            anyhow::anyhow!("addr {} doesn't contain peer id", addr)
-        })?;
+                return;
+            }
+
+            Some(peer_id) => peer_id,
+        };
 
         if self
             .swarm
@@ -37,17 +40,17 @@ impl<'a> PeerConnector<'a> {
         {
             info!(%peer_id, "peer is connected");
 
-            return Ok(());
+            return;
         }
 
-        self.swarm
-            .dial(addr.clone())
-            .tap_err(|err| error!(%err, %addr, "dial peer failed"))?;
+        if let Err(err) = self.swarm.dial(addr.clone()) {
+            error!(%err, %addr, "dial peer failed");
+
+            return;
+        }
 
         info!(%peer_id, "peer is dialing");
 
         self.peer_addr_connecting.insert(peer_id, addr);
-
-        Ok(())
     }
 }

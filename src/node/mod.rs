@@ -161,7 +161,7 @@ where
 
                         Some(addr) = peer_addr_receiver.next() => {
                             PeerConnector::new(swarm, &mut self.peer_addr_connecting)
-                                .connect_peer(addr.into_inner()).await?;
+                                .connect_peer(addr.into_inner()).await;
                         }
 
                         Some(cmd) = command_receiver.next() => {
@@ -233,7 +233,7 @@ where
 
                         Some(addr) = peer_addr_receiver.next() => {
                             PeerConnector::new(swarm, &mut self.peer_addr_connecting)
-                                .connect_peer(addr.into_inner()).await?;
+                                .connect_peer(addr.into_inner()).await;
                         }
 
                         Some(cmd) = command_receiver.next() => {
