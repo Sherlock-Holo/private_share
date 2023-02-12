@@ -59,6 +59,11 @@ pub async fn run() -> anyhow::Result<()> {
     let config_manager = ConfigManager::new(args.config_dir.into()).await?;
     let config = config_manager.load();
     let swarm_addr = config.swarm_listen.parse::<Multiaddr>()?;
+    let relay_server_addr = config
+        .relay_server_addr
+        .as_ref()
+        .map(|addr| addr.parse::<Multiaddr>())
+        .transpose()?;
     let keypair = load_keypair(
         Path::new(&config.secret_key_path),
         Path::new(&config.public_key_path),
@@ -91,6 +96,8 @@ pub async fn run() -> anyhow::Result<()> {
         handshake_key: pre_shared_key,
         refresh_store_interval: humantime::parse_duration(&config.refresh_interval)?,
         sync_file_interval: humantime::parse_duration(&config.sync_file_interval)?,
+        enable_relay_behaviour: args.enable_relay_service,
+        relay_server_addr,
     };
 
     let (command_sender, command_receiver) = mpsc::channel(1);

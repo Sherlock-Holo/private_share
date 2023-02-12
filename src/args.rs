@@ -23,4 +23,7 @@ pub struct RunArgs {
 
     #[arg(short, long)]
     pub debug: bool,
+
+    #[arg(long)]
+    pub enable_relay_service: bool,
 }

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use either::Either;
 use futures_util::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use libp2p::core::upgrade::{read_length_prefixed, write_length_prefixed};
 use libp2p::core::ProtocolName;
@@ -17,8 +18,9 @@ use libp2p::identity::Keypair;
 use libp2p::request_response::{
     ProtocolSupport, RequestResponse, RequestResponseCodec, RequestResponseConfig,
 };
-use libp2p::swarm::{keep_alive, NetworkBehaviour};
+use libp2p::swarm::{dummy, keep_alive, NetworkBehaviour};
 use libp2p::{identify, ping};
+use libp2p_auto_relay::{endpoint, relay};
 use once_cell::sync::Lazy;
 use prost::Message;
 use tap::TapFallible;
@@ -47,10 +49,16 @@ pub struct Behaviour {
     pub(crate) keepalive: keep_alive::Behaviour,
     pub(crate) ping: ping::Behaviour,
     pub(crate) identify: identify::Behaviour,
+    pub(crate) relay: Either<dummy::Behaviour, relay::Behaviour>,
+    pub(crate) endpoint: Either<dummy::Behaviour, endpoint::Behaviour>,
 }
 
 impl Behaviour {
-    pub fn new(key: Keypair) -> anyhow::Result<Self> {
+    pub fn new(
+        key: Keypair,
+        enable_relay_behaviour: bool,
+        endpoint_behaviour: Option<endpoint::Behaviour>,
+    ) -> anyhow::Result<Self> {
         let public_key = key.public();
 
         let gossipsub_config = GossipsubConfigBuilder::default()
@@ -82,6 +90,12 @@ impl Behaviour {
                 IDENTIFY_PROTOCOL.to_string(),
                 public_key,
             )),
+            relay: enable_relay_behaviour
+                .then(|| Either::Right(Default::default()))
+                .unwrap_or(Either::Left(dummy::Behaviour {})),
+            endpoint: endpoint_behaviour
+                .map(Either::Right)
+                .unwrap_or(Either::Left(dummy::Behaviour {})),
         })
     }
 }

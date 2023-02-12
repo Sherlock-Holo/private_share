@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use bytes::{Bytes, BytesMut};
 use derive_builder::Builder;
+use either::Either;
 use futures_channel::oneshot::Sender;
 use itertools::Itertools;
 use libp2p::core::ConnectedPoint;
@@ -16,6 +17,7 @@ use libp2p::request_response::{
 };
 use libp2p::swarm::{AddressScore, SwarmEvent};
 use libp2p::{identify, Multiaddr, PeerId, Swarm};
+use libp2p_auto_relay::{endpoint, relay};
 use prost::Message as _;
 use tap::TapFallible;
 use tokio::fs;
@@ -83,6 +85,24 @@ impl<'a> EventHandler<'a> {
 
                     info!("handle identify event done");
                 }
+
+                BehaviourEvent::Relay(event) => match event {
+                    Either::Left(_) => {}
+                    Either::Right(event) => {
+                        self.handle_relay_event(event);
+
+                        info!("handle relay event done");
+                    }
+                },
+
+                BehaviourEvent::Endpoint(event) => match event {
+                    Either::Left(_) => {}
+                    Either::Right(event) => {
+                        self.handle_endpoint_event(event);
+
+                        info!("handle endpoint event done");
+                    }
+                },
             },
 
             SwarmEvent::ConnectionEstablished {
@@ -409,6 +429,16 @@ impl<'a> EventHandler<'a> {
         if matches!(entry, Entry::Occupied(_)) {
             self.connected_peer.remove(&peer_id);
         }
+    }
+
+    #[instrument(skip(self))]
+    fn handle_relay_event(&mut self, event: relay::Event) {
+        info!(?event, "receive relay event");
+    }
+
+    #[instrument(skip(self))]
+    fn handle_endpoint_event(&mut self, event: endpoint::Event) {
+        info!(?event, "receive endpoint event");
     }
 
     #[instrument(err, skip(self))]

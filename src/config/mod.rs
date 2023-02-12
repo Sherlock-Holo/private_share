@@ -21,6 +21,7 @@ pub struct Config {
     pub peer_addrs: Vec<String>,
     pub http_listen: Vec<SocketAddr>,
     pub swarm_listen: String,
+    pub relay_server_addr: Option<String>,
 }
 
 #[derive(Debug)]

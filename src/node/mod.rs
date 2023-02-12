@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,6 +10,7 @@ use futures_channel::mpsc::Receiver;
 use futures_channel::oneshot::Sender;
 use futures_util::{Stream, StreamExt};
 use libp2p::bandwidth::{BandwidthLogging, BandwidthSinks};
+use libp2p::core::either::EitherTransport;
 use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::core::transport::Boxed;
 use libp2p::core::upgrade::Version;
@@ -18,6 +20,8 @@ use libp2p::pnet::{PnetConfig, PnetError, PreSharedKey};
 use libp2p::request_response::RequestId;
 use libp2p::yamux::YamuxConfig;
 use libp2p::{noise, tcp, websocket, Multiaddr, PeerId, Swarm, Transport};
+use libp2p_auto_relay::combine::CombineTransport;
+use libp2p_auto_relay::endpoint;
 use tap::TapFallible;
 use tokio::time;
 use tokio::time::Interval;
@@ -87,9 +91,16 @@ where
 
         info!("local node peer id {}", peer_id);
 
-        let (transport, bandwidth_sinks) =
-            create_transport(config.key.clone(), config.handshake_key)?;
-        let behaviour = Behaviour::new(config.key)?;
+        let (transport, bandwidth_sinks, endpoint_behaviour) = create_transport(
+            config.key.clone(),
+            config.handshake_key,
+            config.relay_server_addr,
+        )?;
+        let behaviour = Behaviour::new(
+            config.key,
+            config.enable_relay_behaviour,
+            endpoint_behaviour,
+        )?;
 
         let swarm = Swarm::with_tokio_executor(transport, behaviour, peer_id);
 
@@ -300,7 +311,26 @@ where
 pub fn create_transport(
     keypair: Keypair,
     handshake_key: PreSharedKey,
-) -> io::Result<(BoxedTransport, Arc<BandwidthSinks>)> {
+    relay_server_addr: Option<Multiaddr>,
+) -> io::Result<(
+    BoxedTransport,
+    Arc<BandwidthSinks>,
+    Option<endpoint::Behaviour>,
+)> {
+    let relay_server = match relay_server_addr {
+        None => None,
+        Some(addr) => {
+            let peer_id = PeerId::try_from_multiaddr(&addr).ok_or_else(|| {
+                io::Error::new(
+                    ErrorKind::Other,
+                    format!("relay server addr {addr} doesn't contain peer id"),
+                )
+            })?;
+
+            Some((peer_id, addr))
+        }
+    };
+
     let tcp_transport =
         TokioDnsConfig::system(tcp::tokio::Transport::new(tcp::Config::new().nodelay(true)))?
             .and_then(move |conn, connected_point| async move {
@@ -314,6 +344,23 @@ pub fn create_transport(
                 Ok::<_, PnetError>(conn)
             });
     let transport = websocket::WsConfig::new(tcp_transport);
+
+    let (transport, endpoint_behaviour) = match relay_server {
+        None => (EitherTransport::Left(transport), None),
+        Some((relay_server_peer_id, relay_server_addr)) => {
+            let (endpoint_transport, endpoint_behaviour) = endpoint::Transport::new(
+                keypair.public().to_peer_id(),
+                relay_server_addr,
+                relay_server_peer_id,
+            );
+
+            (
+                EitherTransport::Right(CombineTransport::new(transport, endpoint_transport)),
+                Some(endpoint_behaviour),
+            )
+        }
+    };
+
     let (transport, bandwidth_sinks) = BandwidthLogging::new(transport);
 
     let mut yamux_config = YamuxConfig::default();
@@ -327,6 +374,7 @@ pub fn create_transport(
             .multiplex(yamux_config)
             .boxed(),
         bandwidth_sinks,
+        endpoint_behaviour,
     ))
 }
 

@@ -49,6 +49,8 @@ include_dir = "0.7"
 xml-rs = "0.8"
 rupnp = "1"
 base64 = "0.21"
+libp2p-auto-relay = "0.1"
+either = "1"
 
 [features]
 default = ["build-web"]
